@@ -570,8 +570,9 @@ class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 		}
 		
 		//	now wait for the frame to be spat out
+		let resolvedTime = sampleAndDependencies.sample.presentationTime
 		//print("Now WaitForDecodedFrame(\(time))...")
-		let frame = try await WaitForDecodedFrame(time: time)
+		let frame = try await WaitForDecodedFrame(time: resolvedTime)
 		return try frame.GetFrame()
 	}
 	
