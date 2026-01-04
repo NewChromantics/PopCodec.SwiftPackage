@@ -121,8 +121,8 @@ public struct TrackMeta : Identifiable
 {
 	public var id : TrackUid
 	public var startTime : Millisecond?
-	public var duration : Millisecond?
-	public var endTime : Millisecond?	{	duration.map{ $0 + (self.startTime ?? 0) }	}
+	public var duration : Millisecond
+	public var endTime : Millisecond?	{	duration + (self.startTime ?? 0) }
 	public var encoding : TrackEncoding
 	
 	//	will all formats know this data ahead of time?
@@ -291,7 +291,7 @@ class TestVideoSource : VideoSource
 		//await Task.sleep(milliseconds: 1000)
 		return [
 			TrackMeta(id: "Video1", duration: 60*1000, encoding: .Video(H264Codec()), samples: []),
-			TrackMeta(id: "Audio1", encoding: .Audio, samples: [])
+			TrackMeta(id: "Audio1",  duration: 1*1000, encoding: .Audio, samples: [])
 			]
 	}
 }

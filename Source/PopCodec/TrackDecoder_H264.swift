@@ -39,27 +39,21 @@ public protocol TrackDecoder : ObservableObject, ObservableSubscribable
 
 
 
-
 public struct H264Frame
 {
 	public let frameBuffer : CVPixelBuffer
 	public let decodeTime : Millisecond
 	public let presentationTime : Millisecond
+	public let duration : Millisecond
 	
-	init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond) 
+	init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond, duration:Millisecond) 
 	{
 		self.frameBuffer = frameBuffer
 		self.decodeTime = decodeTime
 		self.presentationTime = presentationTime
+		self.duration = duration
 	}
-	/*
-	init(error: Error, decodeTime: Millisecond, presentationTime: Millisecond) 
-	{
-		self.error = error
-		self.frameBuffer = nil
-		self.decodeTime = decodeTime
-		self.presentationTime = presentationTime
-	}*/
+
 }
 
 
@@ -270,7 +264,7 @@ class VideoToolboxH264Decoder : H264Decoder
 					self.onDecodeError(outputPresetentationMs,PopCodecError("Failed to decode frame status=\(status)"))
 					return
 				}
-				let frame = H264Frame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs)
+				let frame = H264Frame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
 				self.onFrameDecoded(frame)
 			}
 			print("Updating lastSubmitedDecodeTime to \(meta.decodeTime)")
@@ -364,9 +358,10 @@ enum H264FrameOrError
 }
 
 
-class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
+//	temporarily public for some direct access
+public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 {
-	var subscriberCancellables : [AnyCancellable] = []
+	public var subscriberCancellables : [AnyCancellable] = []
 	
 	var allocateDecoderTask : Task<H264Decoder,Error>!
 	@Published var decodedFrames : [H264FrameOrError] = []
@@ -408,7 +403,7 @@ class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 		subscriberCancellables.append(decodedFrameNumbersCacheObserver)
 	}
 	
-	func GetDebugView() -> AnyView 
+	public func GetDebugView() -> AnyView 
 	{
 		return AnyView(DebugView())
 	}
@@ -514,7 +509,7 @@ class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 		
 	}
 	
-	func HasCachedFrame(time: Millisecond) -> Bool 
+	public func HasCachedFrame(time: Millisecond) -> Bool 
 	{
 		//	use cached
 		return decodedFrameNumbersCache.contains(time)
@@ -523,7 +518,7 @@ class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 	}
 	
 	
-	func LoadFrame(time: Millisecond) -> AsyncDecodedFrame 
+	public func LoadFrame(time: Millisecond) -> AsyncDecodedFrame 
 	{
 		let frameRenderable = H264AsyncDecodedFrame(presentationTime:time)
 		Task
@@ -541,8 +536,8 @@ class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 		return frameRenderable
 	}
 	
-	
-	private func DecodeFrame(time: Millisecond) async throws -> H264Frame 
+	//	if the time hasn't been resolved, the closest frame will be returned
+	public func DecodeFrame(time: Millisecond) async throws -> H264Frame 
 	{
 		async let decoderPromise = allocateDecoderTask.result
 		

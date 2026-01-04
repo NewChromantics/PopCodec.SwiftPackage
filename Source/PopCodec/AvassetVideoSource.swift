@@ -66,7 +66,7 @@ class AVAssetVideoSource : VideoSource
 			let duration = try? await assetTrack.GetDurationMs()
 			let trackId = "\(assetTrack.trackID)"
 			let encoding = assetTrack.mediaType.encodingType
-			outputTracks.append( TrackMeta(id: trackId, duration: duration, encoding: encoding, samples: []) )
+			outputTracks.append( TrackMeta(id: trackId, duration: duration ?? 0, encoding: encoding, samples: []) )
 		}
 		return outputTracks
 	}

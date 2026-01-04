@@ -79,8 +79,11 @@ struct Mp4Header
 			let samples = trackAtom.samplesInPresentationOrder
 			let firstTime = samples.first.map{Millisecond($0.presentationTime)}
 			let lastTime = samples.last.map{Millisecond($0.presentationTime)}
-			let duration = lastTime.map{ $0 - (firstTime ?? 0) }
-			return TrackMeta(id: "Track \(trackIndex)", startTime:firstTime, duration:duration, encoding: trackAtom.encoding, samples: samples)
+			let duration = lastTime.map{ $0 - (firstTime ?? 0) } ?? 0
+			
+			//	mp4 tracks start at number 1, but this is really just an arbritrary id
+			let trackId = "\(trackIndex+1)"
+			return TrackMeta(id: trackId, startTime:firstTime, duration:duration, encoding: trackAtom.encoding, samples: samples)
 		}
 	}
 	
