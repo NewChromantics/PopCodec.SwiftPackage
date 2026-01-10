@@ -187,12 +187,12 @@ struct ErrorAtom : Atom
 	var error : Error
 	var errorContext : String
 	
-	init(errorContext:String,error:Error,parent:any Atom)
+	init(errorContext:String,error:Error,parent:any Atom,uidOffset:UInt64=1)
 	{
 		self.error = error
 		self.errorContext = errorContext
 		self.fourcc = Fourcc("Err!")
-		self.filePosition = parent.filePosition + 1	//	used as uid, so uniquify it, slightly.
+		self.filePosition = parent.filePosition + uidOffset	//	used as uid, so uniquify it, slightly.
 	}
 }
 

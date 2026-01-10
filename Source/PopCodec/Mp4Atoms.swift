@@ -43,6 +43,7 @@ class Mp4AtomFactory
 			Atom_stss.self,
 			Atom_stts.self,
 			Atom_stco.self,
+			Atom_co64.self,
 			Atom_stsc.self,
 			Atom_mdhd.self,
 			Atom_text.self,
@@ -357,15 +358,19 @@ struct Atom_trak : Atom, SpecialisedAtom
 	var children : [any Atom]
 	var metaAtoms : [any Atom]
 	{[
-		InfoAtom(info: "\(encoding)", parent: self, uidOffset: 0),
-		InfoAtom(info: "\(samplesInFileOrder.count) samples", parent: self, uidOffset: 1)
-	]}
+		//	these are producing duplicate IDs (file offsets) when there's an erro
+		InfoAtom(info: "\(encoding)", parent: self, uidOffset: 1),
+		InfoAtom(info: "\(samplesInFileOrder.count) samples", parent: self, uidOffset: 2),
+		decodeSamplesError.map{ ErrorAtom(errorContext: "Decoding samples", error: $0, parent: self, uidOffset:3) }
+	].compactMap{$0}
+	}
 	var encoding : TrackEncoding
 	var samplesInFileOrder : [Mp4Sample]		//	order in file
 	var samplesInPresentationOrder : [Mp4Sample]
 	{
 		samplesInFileOrder.sorted{ a,b in a.presentationTime < b.presentationTime}
 	}
+	var decodeSamplesError : Error?
 	
 	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Atom_trak 
 	{
@@ -394,9 +399,19 @@ struct Atom_trak : Atom, SpecialisedAtom
 		
 		
 		let sampleTable : Atom_stbl = try children.GetFirstChildAtomAs(fourcc: Atom_stbl.fourcc)
-		let samples = try sampleTable.DecodeSamples(mediaMeta: mediaMeta)
+		var decodeSamplesError : Error?
+		let samples : [Mp4Sample]
+		do
+		{
+			samples = try sampleTable.DecodeSamples(mediaMeta: mediaMeta)
+		}
+		catch
+		{
+			samples = []
+			decodeSamplesError = error
+		}
 		
-		return Atom_trak(header: header, children:children, encoding: encoding, samplesInFileOrder: samples)
+		return Atom_trak(header: header, children:children, encoding: encoding, samplesInFileOrder: samples, decodeSamplesError:decodeSamplesError)
 	}
 }
 
@@ -705,7 +720,13 @@ struct Atom_stbl : Atom, SpecialisedAtom
 		let presentationTimeOffsets = presentationTimeOffsetsAtom?.presentationTimeOffsets ?? defaultPresentationTimeOffsets
 		
 		let chunkMetaAtom : Atom_stsc = try children.GetFirstChildAtomAs(fourcc: Atom_stsc.fourcc)
-		let chunkOffsetsAtom : Atom_stco = try children.GetFirstChildAtomAs(fourcc: Atom_stco.fourcc)
+		let chunkOffsets32Atom : Atom_stco? = try? children.GetFirstChildAtomAs(fourcc: Atom_stco.fourcc)
+		let chunkOffsets64Atom : Atom_co64? = try? children.GetFirstChildAtomAs(fourcc: Atom_co64.fourcc)
+		let chunkOffsetsAtom : Atom_WithChunkOffsets? = chunkOffsets32Atom ?? chunkOffsets64Atom
+		guard let chunkOffsetsAtom else
+		{
+			throw PopCodecError("No 32bit (stco) or 64bit (co64) chunk offsets atom")
+		}
 		let chunkOffsets = chunkOffsetsAtom.chunkOffsets
 		let chunkMetas = chunkMetaAtom.GetUnpackedChunkMetas(chunkCount: chunkOffsets.count)
 
@@ -820,8 +841,12 @@ struct Atom_stss : Atom, SpecialisedAtom
 	}
 }
 
+protocol Atom_WithChunkOffsets
+{
+	var chunkOffsets : [UInt64]	{	get	}
+}
 
-struct Atom_stco : Atom, SpecialisedAtom
+struct Atom_stco : Atom, SpecialisedAtom, Atom_WithChunkOffsets
 {
 	static let fourcc = Fourcc("stco")
 	
@@ -836,7 +861,7 @@ struct Atom_stco : Atom, SpecialisedAtom
 	var version : UInt8
 	var flags : UInt32
 	var chunkOffsetsLittleEndian : [UInt32]
-	var chunkOffsets : [UInt32]	{	chunkOffsetsLittleEndian.map{ $0.bigEndian }	}
+	var chunkOffsets : [UInt64]	{	chunkOffsetsLittleEndian.map{ UInt64($0.bigEndian) }	}
 	
 	static func DecodeOffsets(content:inout DataReader) async throws -> (UInt8,UInt32,[UInt32])
 	{
@@ -845,6 +870,43 @@ struct Atom_stco : Atom, SpecialisedAtom
 		let entryCount = try await content.Read32();
 		
 		var offsets = Array(repeating:UInt32(0), count: Int(entryCount) )
+		try await content.ReadBytes(to:&offsets)
+		return (version,flags,offsets)
+	}
+	
+	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	{
+		let (version,flags,offsets) = try await DecodeOffsets(content: &content)
+		
+		return Self(header: header, version: version, flags: flags, chunkOffsetsLittleEndian: offsets)
+	}
+}
+
+
+struct Atom_co64 : Atom, SpecialisedAtom, Atom_WithChunkOffsets
+{
+	static let fourcc = Fourcc("co64")
+	
+	var header : AtomHeader
+	var childAtoms : [any Atom]?
+	{[
+		InfoAtom(info: "\(chunkOffsets.count) sample chunk offsets", parent: self, uidOffset: 0),
+		InfoAtom(info: "version: \(version)", parent: self, uidOffset: 1),
+		InfoAtom(info: "flags: \(flags)", parent: self, uidOffset: 2),
+	]}
+	
+	var version : UInt8
+	var flags : UInt32
+	var chunkOffsetsLittleEndian : [UInt64]
+	var chunkOffsets : [UInt64]	{	chunkOffsetsLittleEndian.map{ $0.bigEndian }	}
+	
+	static func DecodeOffsets(content:inout DataReader) async throws -> (UInt8,UInt32,[UInt64])
+	{
+		let version = try await content.Read8()
+		let flags = try await content.Read24()
+		let entryCount = try await content.Read32();
+		
+		var offsets = Array(repeating:UInt64(0), count: Int(entryCount) )
 		try await content.ReadBytes(to:&offsets)
 		return (version,flags,offsets)
 	}
