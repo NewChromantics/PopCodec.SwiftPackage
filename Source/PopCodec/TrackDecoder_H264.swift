@@ -471,10 +471,24 @@ public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 	private func WaitForDecodedFrame(time:Millisecond) async throws -> H264FrameOrError
 	{
 		var listener : AnyCancellable?
+
+		//	adding a timeout to try and help identify bugs, but also not get stuck when there's decoding problems
+		let startWaitTime = Date.now
+		let timeout = TimeInterval(10)//	secs
+		func CheckForTimeout() throws
+		{
+			let elapsed = Date.now.timeIntervalSince(startWaitTime)
+			if elapsed < timeout
+			{
+				return
+			}
+			throw PopCodecError("Timeout(\(elapsed)) waiting for frame \(time)")
+		}
 		
-		//	gr: add a timeout?
 		while true
 		{
+			try CheckForTimeout()
+			
 			if let frame = GetDecodedFrame(time: time)
 			{
 				return frame
