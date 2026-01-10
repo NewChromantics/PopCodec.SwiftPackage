@@ -102,6 +102,16 @@ public enum TrackEncoding
 		}
 	}
 		
+	var icon : String
+	{
+		switch self
+		{
+			case .Video(_):	return "video"
+			case .Audio:	return "waveform.path"
+			case .Text:		return "textformat.characters"
+			case .Unknown:	return "questionmark.square.dashed"
+		}
+	}
 }
 
 func clamp(_ x:Int, min: Int, max: Int) -> Int
@@ -133,6 +143,7 @@ public struct TrackMeta : Identifiable
 	//	might be room for lots of optimisation here.
 	public var keyframeSamples : [Mp4Sample]	{	samples.filter{ $0.isKeyframe }	}
 	
+	public var icon : String		{	encoding.icon	}
 	public var label : String
 	{
 		return "\(id) (\(encoding))"
