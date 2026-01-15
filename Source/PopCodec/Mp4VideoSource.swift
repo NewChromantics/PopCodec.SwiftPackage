@@ -179,7 +179,7 @@ public class Mp4VideoSource : VideoSource
 		{
 			throw BadDataError("File position \(byteFirstIndex)...\(byteLastIndex) out of bounds (\(fileData.count))")
 		}
-		let slice = fileData[byteFirstIndex..<byteLastIndex]
+		let slice = fileData[byteFirstIndex...byteLastIndex]
 		
 		//	something about this Data() goes out of scope...
 		let copy = Data(slice)

@@ -234,6 +234,7 @@ public struct HevcCodec : Codec
 			//	should also strip emulation bytes
 			let packets = [vps,sps,pps,seiPrefix,seiSuffix].compactMap{$0}
 			var parameterSetBytes = packets.map{ $0.dataWithoutLengthPrefix }
+			//	wont allocate format when stripping emulation bytes...
 			//parameterSetBytes = parameterSetBytes.map{ HevcParameter.StripEmulationPrevention($0)	}
 			let parameterSetDatas = parameterSetBytes.map{ Data($0) }
 			

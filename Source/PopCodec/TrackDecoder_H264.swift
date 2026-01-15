@@ -178,6 +178,22 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 		return Array(undecodedSamples)
 	}
 	
+	func GetNaluDataLength(frameData:Data) -> Int?
+	{
+		guard let lengthSize = self.format.nalUnitHeaderLength else
+		{
+			return nil
+		}
+		let lengthBytes = frameData[0..<lengthSize]
+		var lengthInData = 0
+		for byte in lengthBytes
+		{
+			lengthInData <<= 8
+			lengthInData |= Int(byte)
+		}
+		return lengthInData + lengthSize
+	}
+	
 	func DecodeFrame(meta:Mp4Sample,data:Data) throws
 	{
 		do
@@ -198,7 +214,15 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 					throw PopCodecError("Decoding backwards without jumping to a keyframe, expect corruption/failure")
 				}
 			}
-				
+			
+			if let prefixSize = GetNaluDataLength(frameData:data)
+			{
+				if prefixSize != data.count
+				{
+					//throw PopCodecError("Frame data size is specified as \(prefixSize) but is \(data.count)")
+					print("Frame data size is specified as \(prefixSize) but is \(data.count)")
+				}
+			}
 			
 			let blockBuffer = try data.toCMBlockBuffer()
 			
