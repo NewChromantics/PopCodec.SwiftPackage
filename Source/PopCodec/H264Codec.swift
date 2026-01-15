@@ -16,18 +16,45 @@ public extension Codec
 }
 
 
+struct HevcPacket
+{
+	var filePosition : UInt64
+	var type : UInt8
+	var naluCount : UInt16
+	var totalSize : UInt64		{	1 + 2 + naluTotalDataSize	}
+
+	var nalus : [HevcNalu]
+	var naluTotalDataSize : UInt64	{	nalus.map{ $0.totalSize }.reduce(0, {total,this in total + this })	}
+}
+
+struct HevcNalu
+{
+	var data : [UInt8]
+	var filePosition : UInt64
+	var totalSize : UInt64	{	UInt64(data.count)	}
+}
+
 //	h265
 public struct HevcCodec : Codec
 {
 	public static var name: String = "HEVC"
 	
 	var parameterSets : [[UInt8]]
+	var packets : [HevcPacket]
 	
 	func GetMetaAtoms(parent:any Atom) -> [any Atom]
 	{
-		return [
-			InfoAtom(info:"H265/Hevc",parent: parent,uidOffset: 2),
-		]
+		return packets.flatMap
+		{
+			packet in
+			let packetMeta = InfoAtom(info: "Packet \(packet.type)", filePosition: packet.filePosition, totalSize: packet.totalSize)
+			let naluMetas = packet.nalus.map
+			{
+				nalu in
+				return InfoAtom(info: "Nalu", filePosition: nalu.filePosition, totalSize: nalu.totalSize)
+			}
+			return [packetMeta] + naluMetas
+		}
 	}
 	
 	public func GetFormat() throws -> CMVideoFormatDescription
@@ -35,6 +62,15 @@ public struct HevcCodec : Codec
 		let hps = parameterSets.map{ Data($0) }
 		do
 		{
+			//	this crashes if data length is zero
+			for ps in hps
+			{
+				if ps.isEmpty
+				{
+					throw PopCodecError("Zero sized parameter set passed to CoreVideo format will crash")
+				}
+			}
+			
 			let format = try CMFormatDescription(hevcParameterSets: hps)
 			return format
 		}

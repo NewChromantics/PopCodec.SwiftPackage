@@ -192,6 +192,12 @@ public class DataReader : ByteReader
 	
 	public func ReadBytes(_ byteCount: Int) async throws -> Data 
 	{
+		//	should this error?
+		if byteCount == 0
+		{
+			return Data()
+		}
+		
 		//	we're sat at the end of the file, reads will fail
 		if position == data.count
 		{

@@ -240,8 +240,8 @@ struct InfoAtom : Atom
 	var fourcc: Fourcc
 	var filePosition: UInt64
 	var headerSize: UInt64	{	0	}
-	var contentSize: UInt64	{	0	}
-	var totalSize: UInt64	{	0	}
+	var contentSize: UInt64	{	totalSize	}
+	var totalSize: UInt64
 	var childAtoms: [any Atom]? = nil
 	
 	var label : String	{	info	}
@@ -254,6 +254,16 @@ struct InfoAtom : Atom
 		self.info = info
 		self.fourcc = Fourcc("Info")
 		self.filePosition = parent.filePosition + UInt64(uidOffset+1)	//	used as uid, so uniquify it, slightly.
+		self.totalSize = 0
+	}
+	
+	//	allow pos + content size to let this atom point at some place in the file
+	init(info:String,filePosition:UInt64,totalSize:UInt64)
+	{
+		self.info = info
+		self.fourcc = Fourcc("Info")
+		self.filePosition = filePosition
+		self.totalSize = totalSize
 	}
 }
 
