@@ -235,7 +235,7 @@ struct Atom_avc1 : Atom, SpecialisedAtom
 		set { children = newValue ?? [] }
 	}
 	var children : [any Atom]
-	var h264Codec : H264Codec
+	var codec : H264Codec
 		
 	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Atom_avc1 
 	{
@@ -289,7 +289,7 @@ struct Atom_avc1 : Atom, SpecialisedAtom
 		
 		let avcc : Atom_avcc = try children.GetFirstChildAtomAs(fourcc: Atom_avcc.fourcc)
 		
-		return Atom_avc1(header:header, children: metaAtoms+children, h264Codec: avcc.h264 )
+		return Atom_avc1(header:header, children: metaAtoms+children, codec: avcc.h264 )
 	}
 }
 
@@ -416,7 +416,7 @@ struct Atom_hev1 : Atom, SpecialisedAtom
 		}
 		
 		let hvcc : Atom_hvcc? = try? children.GetFirstChildAtomAs(fourcc: Atom_hvcc.fourcc)
-		let codec = hvcc?.codec ?? HevcCodec(parameterSets: [], packets: [])
+		let codec = hvcc?.codec ?? HevcCodec(parameters: [], naluHeaderSize: 0)
 		
 		return Self(header:header, children: metaAtoms+children, codec: codec)
 	}
@@ -446,45 +446,55 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 		
 		//	always 2-byte nalu length in header
 		let hvccNaluLengthSize = 2
+		let isNalff = false	//	not sure what this is yet, but has to do with padding in nalu units
 		
 		//	ffmpeg just skips first 21 bytes if data>23 bytes
+		//	here's the contents
+		//	https://github.com/axiomatic-systems/Bento4/blob/master/Source/C%2B%2B/Core/Ap4HvccAtom.cpp#L258C5-L280C55
 		let prefixData = try await content.ReadBytes(21)
-		let byte0 = prefixData[0]
+		let configurationVersion = prefixData[0]
 		
 		//	ffmpeg: "configurationVersion from 14496-15."
-		let configurationVersion = byte0 == 1
-		let predatingStandard = byte0 == 0
+		let predatingStandard = configurationVersion == 0
 		if predatingStandard
 		{
 			throw PopCodecError("hvcc content predates standard - currently unsupported")
 		}
-		
+		/*
 		//if (size >= 23 && (configurationVersion || (predatingStandard && (data[1] || data[2] > 1)))) {
 		let hasHeader = content.bytesRemaining >= 23 && configurationVersion
 		if !hasHeader
 		{
 			throw PopCodecError("hvcc content has no header - currently unsupported")
 		}
+*/
+		let packetMeta = try await content.Read8()
+		let constantFrameRate = (packetMeta >> 6) & 0x03
+		let temporalLayerCount = (packetMeta >> 3) & 0x07
+		let temporalIdNested = (packetMeta >> 2) & 0x01
+		let naluLengthSizeMinusOne = (packetMeta) & 0x03
+		let fileNaluLengthSize = naluLengthSizeMinusOne + 1
+		
+		let parameterCount = try await content.Read8()	//	num_arrays in ffmpeg
 
-		let fileNaluLengthSizeAndSomething = try await content.Read8()
-		let fileNaluLengthSize = (fileNaluLengthSizeAndSomething & 3) + 1
-		let num_arrays = try await content.Read8()
-		let packetCount = num_arrays
-		
 		var metaAtoms : [InfoAtom] = []
-		var packets : [HevcPacket] = []
-		
+		metaAtoms.append(InfoAtom(info: "constantFrameRate=\(constantFrameRate)", parent: header, uidOffset: metaAtoms.count))
+		metaAtoms.append(InfoAtom(info: "temporalLayerCount=\(temporalLayerCount)", parent: header, uidOffset: metaAtoms.count))
+		metaAtoms.append(InfoAtom(info: "temporalIdNested=\(temporalIdNested)", parent: header, uidOffset: metaAtoms.count))
 		metaAtoms.append(InfoAtom(info: "NaluLengthSize=\(fileNaluLengthSize)", parent: header, uidOffset: metaAtoms.count))
-		metaAtoms.append(InfoAtom(info: "PacketCount=\(num_arrays)", parent: header, uidOffset: metaAtoms.count))
-		
-		//	expecting this to be a stream of nalu packets
-		for packetIndex in 0..<packetCount
+		metaAtoms.append(InfoAtom(info: "parameterCount=\(parameterCount)", parent: header, uidOffset: metaAtoms.count))
+
+		var parameters : [HevcParameter] = []
+
+		for parameterIndex in 0..<parameterCount
 		{
-			let packetPosition = content.globalPosition
-			let packetType = try await content.Read8() //& 0x3f
+			let filePosition = content.globalPosition
+			let parameterHeader = try await content.Read8()
+
+			//	expecting this to be a stream of nalu packets
 			let naluCount = try await content.Read16()	//	big endian
 			
-			var packet = HevcPacket(filePosition: packetPosition, type: packetType, naluCount: naluCount, nalus: [])
+			var parameter = HevcParameter(filePosition:filePosition, parameterHeader:parameterHeader, naluCount:naluCount, nalus: [])
 			
 			for naluIndex in 0..<naluCount
 			{
@@ -495,8 +505,8 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 				let nalBytes = try await content.ReadBytes(naluTotalSize - 2)	//	- content size we already read
 				//metaAtoms.append( InfoAtom(info: "Packet(\(packetType)) #\(packetIndex) Nalu #\(naluIndex)/\(naluCount) size=\(naluTotalSize)", parent: header, filePosition: naluPosition, totalSize: UInt64(naluTotalSize)) )
 
-				let nalu = HevcNalu(data: Array(nalBytes), filePosition: naluPosition)
-				packet.nalus.append(nalu)
+				let nalu = HevcNalu(contentSize: naluContentSize, dataWithoutLengthPrefix: Array(nalBytes), filePosition: naluPosition)
+				parameter.nalus.append(nalu)
 				/*
 				ret = hevc_decode_nal_units(gb.buffer, nalsize, ps, sei, *is_nalff,
 											*nal_length_size, err_recognition, apply_defdispwin,
@@ -509,7 +519,7 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 				}*/
 			}
 			
-			packets.append(packet)
+			parameters.append(parameter)
 		}
 
 		if content.bytesRemaining > 0
@@ -519,7 +529,7 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 			metaAtoms.append( InfoAtom(info: "Unread bytes=\(bytes.count)", filePosition: unreadPosition, totalSize: UInt64(bytes.count)))
 		}
 		
-		let hevc = HevcCodec(parameterSets: [], packets: packets)
+		let hevc = HevcCodec(parameters: parameters, naluHeaderSize: fileNaluLengthSize)
 		let atom = Self(header:header,codec: hevc,metaAtoms: metaAtoms)
 		return atom
 	}
@@ -558,7 +568,7 @@ struct Atom_trak : Atom, SpecialisedAtom
 		
 		if let avc1 : Atom_avc1 = try? children.GetFirstChildAtomAs(fourcc: Atom_avc1.fourcc)
 		{
-			encoding = .Video(avc1.h264Codec)
+			encoding = .Video(avc1.codec)
 		}
 		
 		if let hevc : Atom_hev1 = try? children.GetFirstChildAtomAs(fourcc: Atom_hev1.fourcc)
