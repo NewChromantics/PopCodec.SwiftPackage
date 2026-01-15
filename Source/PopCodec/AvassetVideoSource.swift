@@ -70,6 +70,12 @@ class AVAssetVideoSource : VideoSource
 		}
 		return outputTracks
 	}
+
+	func GetAtomData(atom: any Atom) async throws -> Data 
+	{
+		throw PopCodecError("GetAtomData not implemented")
+	}
+	
 	
 	func GetTrackMetas() async throws -> [TrackMeta] 
 	{

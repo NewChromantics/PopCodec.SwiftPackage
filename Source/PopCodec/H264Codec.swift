@@ -1,7 +1,54 @@
 import CoreMedia
 
-public struct H264Codec
+
+public protocol Codec
 {
+	static var name : String	{get}
+	var name : String	{get}
+	
+	//	may want to specialise this in a videotoolbox codec
+	func GetFormat() throws -> CMVideoFormatDescription
+}
+
+public extension Codec
+{
+	var name : String	{	Self.name	}
+}
+
+
+//	h265
+public struct HevcCodec : Codec
+{
+	public static var name: String = "HEVC"
+	
+	var parameterSets : [[UInt8]]
+	
+	func GetMetaAtoms(parent:any Atom) -> [any Atom]
+	{
+		return [
+			InfoAtom(info:"H265/Hevc",parent: parent,uidOffset: 2),
+		]
+	}
+	
+	public func GetFormat() throws -> CMVideoFormatDescription
+	{
+		let hps = parameterSets.map{ Data($0) }
+		do
+		{
+			let format = try CMFormatDescription(hevcParameterSets: hps)
+			return format
+		}
+		catch
+		{
+			throw PopCodecError("Failed to allocate hevc format; \(error)")
+		}
+	}
+}
+
+public struct H264Codec : Codec
+{
+	public static var name: String = "H264"
+
 	var profile : UInt8 = 0
 	var compatibility : UInt8 = 0
 	var level : UInt8 = 0
@@ -21,12 +68,8 @@ public struct H264Codec
 			InfoAtom(info:"pps x\(pps.count)",parent: parent,uidOffset: 6),
 		]
 	}
-}
-
-extension H264Codec
-{
 	
-	func GetFormat() throws -> CMVideoFormatDescription
+	public func GetFormat() throws -> CMVideoFormatDescription
 	{
 		let parameterSets = [
 			Data(self.sps.first!),
@@ -40,3 +83,4 @@ extension H264Codec
 		return format
 	}
 }
+

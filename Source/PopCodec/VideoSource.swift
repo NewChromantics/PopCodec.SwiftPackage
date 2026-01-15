@@ -88,7 +88,7 @@ extension Array
 
 public enum TrackEncoding
 {
-	case Video(H264Codec),
+	case Video(Codec),
 		 Audio,
 		 Text,	//	in future, specifically subtitle or not
 	Unknown
@@ -101,7 +101,16 @@ public enum TrackEncoding
 			default:	return false
 		}
 	}
-		
+	
+	var label : String
+	{
+		switch self
+		{
+			case .Video(let codec):	return codec.name
+			default:		return "\(self)"
+		}
+	}
+	
 	var icon : String
 	{
 		switch self
@@ -146,7 +155,7 @@ public struct TrackMeta : Identifiable
 	public var icon : String		{	encoding.icon	}
 	public var label : String
 	{
-		return "\(id) (\(encoding))"
+		return "\(id) \(encoding.label)"
 	}
 	
 	public func GetFrameTimeLessOrEqualToTime(_ time:Millisecond,keyframe:Bool) -> Millisecond?
@@ -242,6 +251,7 @@ public protocol VideoSource : ObservableObject
 	func GetTrackMetas() async throws -> [TrackMeta]
 	func GetAtoms() async throws -> [any Atom]				//	meta essentially
 	func GetFrameData(frame:TrackAndTime) async throws -> Data
+	func GetAtomData(atom:any Atom) async throws -> Data
 	func AllocateTrackDecoder(track:TrackMeta) -> (any TrackDecoder)?
 }
 
@@ -296,7 +306,12 @@ class TestVideoSource : VideoSource
 	var typeName: String	{"TestVideoSource"}
 	
 	
+	func GetAtomData(atom: any Atom) async throws -> Data 
+	{
+		throw PopCodecError("GetAtomData not implemented")
+	}
 	
+
 	func GetTrackMetas() async throws -> [TrackMeta] 
 	{
 		//await Task.sleep(milliseconds: 1000)

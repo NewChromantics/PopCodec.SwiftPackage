@@ -107,7 +107,7 @@ extension ByteReader
 		}
 		catch
 		{
-			return ErrorAtom(errorContext: "Decoding \(atom.fourcc)", error: error, parent: atom)
+			return ErrorAtom(errorContext: "Error Decoding \(atom.fourcc)", error: error, erroredAtom: atom)
 		}
 		
 		//	generic atom, see if we can auto decode child atoms
@@ -203,9 +203,10 @@ public class DataReader : ByteReader
 			throw BadDataError("Reading beyond end of data")
 		}
 		
-		//	something about reading data[] of data[] is going wrong, so forcing an allocation...	
+		//	something about reading data[] of data[] is going wrong, so forcing an allocation...
+		let slice = data[position..<position+byteCount]
 		//let read = data[position..<position+byteCount]
-		let read = Array(data[position..<position+byteCount])
+		let read = Array(slice)
 		if read.count != byteCount
 		{
 			fatalError("Got wrong number of bytes(\(read.count)) for requested \(byteCount)")

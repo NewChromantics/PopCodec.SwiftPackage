@@ -12,14 +12,14 @@ import UniformTypeIdentifiers
 
 public class H264AsyncDecodedFrame : AsyncDecodedFrame
 {
-	@Published public var frame : H264Frame? = nil
+	@Published public var frame : VideoToolboxFrame? = nil
 	
 	public init(presentationTime:Millisecond)
 	{
 		super.init(frameTime: presentationTime)
 	}
 	
-	@MainActor func OnFrame(_ frame:H264Frame)
+	@MainActor func OnFrame(_ frame:VideoToolboxFrame)
 	{
 		print("OnFrame \(frame.presentationTime)")
 		self.frame = frame
@@ -39,7 +39,7 @@ public protocol TrackDecoder : ObservableObject, ObservableSubscribable
 
 
 
-public struct H264Frame
+public struct VideoToolboxFrame
 {
 	public let frameBuffer : CVPixelBuffer
 	public let decodeTime : Millisecond
@@ -57,11 +57,13 @@ public struct H264Frame
 }
 
 
-protocol H264Decoder
+public protocol VideoDecoder
 {
-	var onFrameDecoded : (H264Frame)->Void			{	get	}
+	associatedtype CodecType : Codec
+	
+	var onFrameDecoded : (VideoToolboxFrame)->Void			{	get	}
 	var onDecodeError : (Millisecond,Error)->Void	{	get	}
-	init(codecMeta:H264Codec,onFrameDecoded: @escaping (H264Frame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
+	init(codecMeta:CodecType,onFrameDecoded: @escaping (VideoToolboxFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 
 	//	to save re-decoding, filter out the samples we dont need to re-decode from the current state
 	func FilterUnneccesaryDecodes(samples:[Mp4Sample]) -> [Mp4Sample]
@@ -119,17 +121,17 @@ class PopH264Decoder : H264Decoder
 }
 */
 
-class VideoToolboxH264Decoder : H264Decoder
+class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 {
 	var session : VTDecompressionSession
-	var onFrameDecoded : (H264Frame)->Void
+	var onFrameDecoded : (VideoToolboxFrame)->Void
 	var onDecodeError : (Millisecond,Error)->Void
 	var format : CMVideoFormatDescription
 	
 	//	continue decoding when possible
 	var lastSubmitedDecodeTime : Millisecond? = nil
 	
-	required init(codecMeta:H264Codec,onFrameDecoded: @escaping (H264Frame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
+	required init(codecMeta:CodecType,onFrameDecoded: @escaping (VideoToolboxFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 	{
 		self.onFrameDecoded = onFrameDecoded
 		self.onDecodeError = onDecodeError
@@ -264,7 +266,7 @@ class VideoToolboxH264Decoder : H264Decoder
 					self.onDecodeError(outputPresetentationMs,PopCodecError("Failed to decode frame status=\(status)"))
 					return
 				}
-				let frame = H264Frame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
+				let frame = VideoToolboxFrame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
 				self.onFrameDecoded(frame)
 			}
 			print("Updating lastSubmitedDecodeTime to \(meta.decodeTime)")
@@ -325,7 +327,7 @@ enum CMEncodingError: Error {
 
 enum H264FrameOrError
 {
-	case frame(H264Frame),
+	case frame(VideoToolboxFrame),
 		 error((Millisecond,Error))
 	
 	var presentationTime : Millisecond
@@ -347,7 +349,7 @@ enum H264FrameOrError
 	}
 	
 	//	throws error if this is an error
-	func GetFrame() throws -> H264Frame
+	func GetFrame() throws -> VideoToolboxFrame
 	{
 		switch self
 		{
@@ -359,11 +361,12 @@ enum H264FrameOrError
 
 
 //	temporarily public for some direct access
-public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
+public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, TrackDecoder, ObservableObject
 {
+	typealias CodecType = VideoDecoderType.CodecType
 	public var subscriberCancellables : [AnyCancellable] = []
 	
-	var allocateDecoderTask : Task<H264Decoder,Error>!
+	var allocateDecoderTask : Task<VideoDecoder,Error>!
 	@Published var decodedFrames : [H264FrameOrError] = []
 	private var decodedFrameNumbersCache = Set<Millisecond>()	//	fast access to decodedFrames data
 
@@ -374,7 +377,7 @@ public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 	//var getFrameData : (Mp4Sample) async throws -> Data
 	var maxRetainedFrames = 60
 
-	init(codecMeta:H264Codec,getFrameSampleAndDependencies:@escaping (Millisecond)async throws->Mp4SampleAndDependencies,getFrameData:@escaping (Mp4Sample)async throws->Data)
+	init(codecMeta:CodecType,getFrameSampleAndDependencies:@escaping (Millisecond)async throws->Mp4SampleAndDependencies,getFrameData:@escaping (Mp4Sample)async throws->Data)
 	{
 		//self.getFrameData = getFrameData
 		//self.getFrameSample = getFrameSample
@@ -417,9 +420,10 @@ public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 	}
 	
 	
-	private func AllocateDecoder(codecMeta:H264Codec) async throws -> H264Decoder
+	private func AllocateDecoder(codecMeta:CodecType) async throws -> VideoDecoderType
 	{
-		return try VideoToolboxH264Decoder(codecMeta:codecMeta,onFrameDecoded: OnFrameDecoded,onDecodeError: OnFrameError)
+		return try VideoDecoderType(codecMeta: codecMeta, onFrameDecoded: OnFrameDecoded, onDecodeError: OnFrameError)
+		//return try VideoToolboxH264Decoder(codecMeta:codecMeta,onFrameDecoded: OnFrameDecoded,onDecodeError: OnFrameError)
 	}
 	
 	private func OnFrameError(presentationFrame:Millisecond,error:Error)
@@ -427,7 +431,7 @@ public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 		
 	}
 	
-	private func OnFrameDecoded(frame:H264Frame)
+	private func OnFrameDecoded(frame:VideoToolboxFrame)
 	{
 		//	overwriting old frames makes sense, but the cache the FrameRenderer has will retain it
 		//	so we're going to skip new frames!
@@ -551,7 +555,7 @@ public class H264TrackDecoder : FrameFactory, TrackDecoder, ObservableObject
 	}
 	
 	//	if the time hasn't been resolved, the closest frame will be returned
-	public func DecodeFrame(time: Millisecond) async throws -> H264Frame 
+	public func DecodeFrame(time: Millisecond) async throws -> VideoToolboxFrame 
 	{
 		async let decoderPromise = allocateDecoderTask.result
 		

@@ -33,6 +33,8 @@ class Mp4AtomFactory
 		[
 			Atom_ftyp.self,
 			Atom_stsd.self,
+			Atom_hev1.self,
+			Atom_hvcc.self,
 			Atom_avc1.self,
 			Atom_avcc.self,
 			Atom_trak.self,
@@ -349,6 +351,140 @@ struct Atom_avcc : Atom, SpecialisedAtom
 }
 
 
+struct Atom_hev1 : Atom, SpecialisedAtom
+{
+	static let fourcc = Fourcc("hev1")
+	
+	var header : AtomHeader
+	var childAtoms : [any Atom]?
+	{
+		get { children }
+		set { children = newValue ?? [] }
+	}
+	var children : [any Atom]
+	var codec : HevcCodec
+	
+	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	{
+		//	https://stackoverflow.com/a/43617477/355753
+		//	https://github.com/NewChromantics/PopCodecs/blob/master/PopMpeg4.cs#L1024
+		//	stsd isn't very well documented
+		//	https://www.cimarronsystems.com/wp-content/uploads/2017/04/Elements-of-the-H.264-VideoAAC-Audio-MP4-Movie-v2_0.pdf
+		//auto SampleDescriptionSize = Reader.Read32();
+		//auto CodecFourcc = Reader.ReadString(4);
+		let reserved = try await content.ReadBytes(6);
+		let DataReferenceIndex = try await content.Read16();
+		
+		let Predefines = try await content.ReadBytes(16);
+		let MediaWidth = try await content.Read16();
+		let MediaHeight = try await content.Read16();
+		let HorzResolution = try await content.Read16();
+		let HorzResolutionLow = try await content.Read16();
+		let VertResolution = try await content.Read16();
+		let VertResolutionLow = try await content.Read16();
+		let Reserved1 = try await content.Read8();
+		let FrameCount = try await content.Read8();
+		let ColourDepth = try await content.Read8();
+		
+		//	gr: some magic number
+		let MoreData = try await content.ReadBytes(39);
+		
+		let metas : [String:Any] = [
+			"Predefines":Predefines,
+			"MediaWidth":MediaWidth,
+			"MediaHeight":MediaHeight,
+			"HorzResolution":HorzResolution,
+			"HorzResolutionLow":HorzResolutionLow,
+			"VertResolution":VertResolution,
+			"VertResolutionLow":VertResolutionLow,
+			"FrameCount":FrameCount,
+			"ColourDepth":ColourDepth,
+		]
+		let metaAtoms = metas.enumerated().map
+		{
+			index,meta in 
+			InfoAtom(info:"\(meta.key)=\(meta.value)",parent:header,uidOffset:index+10)
+		}
+		
+		
+		//	now there's more atoms!
+		var children : [any Atom] = [] 
+		while content.bytesRemaining > 0
+		{
+			let child = try await content.ReadAtom()
+			children.append(child)
+		}
+		
+		let hvcc : Atom_hvcc? = try? children.GetFirstChildAtomAs(fourcc: Atom_hvcc.fourcc)
+		let codec = hvcc?.codec ?? HevcCodec(parameterSets: [])
+		
+		return Self(header:header, children: metaAtoms+children, codec: codec)
+	}
+}
+
+
+
+struct Atom_hvcc : Atom, SpecialisedAtom
+{
+	static let fourcc = Fourcc("hvcC")
+	
+	var header : AtomHeader 
+	var codec : HevcCodec
+	var packets : [InfoAtom]
+	
+	var childAtoms : [any Atom]?
+	{
+		packets +
+		//[InfoAtom(info:"Version \(version)",parent: self,uidOffset: 0)]
+		//+
+		codec.GetMetaAtoms(parent:self)
+	}
+	
+	
+	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	{
+		//	https://github.com/axiomatic-systems/Bento4/blob/master/Source/C%2B%2B/Core/Ap4HvccAtom.cpp#L248
+		//	https://github.com/FFmpeg/FFmpeg/blob/6c878f8b829bc9da4bbb5196c125e55a7c3ac32f/libavcodec/hevc/parse.c#L91
+		
+		/*
+		
+		/* data[0] == 1 is configurationVersion from 14496-15.
+		 * data[0] == 0 is for backward compatibility predates the standard.
+		 *
+		 * Minimum number of bytes of hvcC with 0 numOfArrays is 23.
+		 */
+		if (size >= 23 && ((data[0] == 1) || (data[0] == 0 && (data[1] || data[2] > 1)))) {
+			/* It seems the extradata is encoded as hvcC format. */
+			int i, j, num_arrays, nal_len_size;
+*/
+		
+		var packets : [InfoAtom] = []
+		//	1 2 32
+		//	expecting this to be a stream of nalu packets
+		while content.bytesRemaining > 0
+		{
+			let naluHeader0001 = try await content.ReadBytes(4)
+			let packetType = try await content.Read8()
+			let packetContent = try await content.Read8()
+			let packetSize = try await content.Read16()
+			let packet = try await content.ReadBytes(Int(packetSize))
+			
+			let description = "Nalu type=\(packetType) content=\(packetContent) size=\(packetSize)"
+			let meta = InfoAtom(info: description, parent: header, uidOffset: packets.count+1)
+			packets.append(meta)
+		}
+		//	nalu header 001
+		//	type 8
+		//	content	16
+		//	size	16
+		let bytes = try await content.ReadBytes(Int(content.bytesRemaining))
+		let hevc = HevcCodec(parameterSets: [Array(bytes)])
+		let atom = Self(header:header,codec: hevc,packets: packets)
+		return atom
+	}
+}
+
+
 struct Atom_trak : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("trak")
@@ -382,6 +518,11 @@ struct Atom_trak : Atom, SpecialisedAtom
 		if let avc1 : Atom_avc1 = try? children.GetFirstChildAtomAs(fourcc: Atom_avc1.fourcc)
 		{
 			encoding = .Video(avc1.h264Codec)
+		}
+		
+		if let hevc : Atom_hev1 = try? children.GetFirstChildAtomAs(fourcc: Atom_hev1.fourcc)
+		{
+			encoding = .Video(hevc.codec)
 		}
 		
 		if let mp4a = try? children.GetFirstChildAtom(fourcc: Atom_mp4a.fourcc)
@@ -634,15 +775,15 @@ struct Atom_ctts : Atom, SpecialisedAtom
 	
 	var version : UInt8
 	var flags : UInt32
-	var presentationTimeOffsets : [UInt32]
+	var presentationTimeOffsets : [Int32]	//	these can be negative!
 	
-	static func DecodeRle(content:inout DataReader) async throws -> (UInt8,UInt32,[UInt32])
+	static func DecodeRle(content:inout DataReader) async throws -> (UInt8,UInt32,[Int32])
 	{
 		let version = try await content.Read8()
 		let flags = try await content.Read24()
 		let entryCount = try await content.Read32()
 		
-		var countAndDurations = Array(repeating:(UInt32(0),UInt32(0)), count: Int(entryCount))
+		var countAndDurations = Array(repeating:(UInt32(0),Int32(0)), count: Int(entryCount))
 		try await content.ReadBytes(to: &countAndDurations)
 		
 		let durations = countAndDurations.flatMap
@@ -676,14 +817,14 @@ struct Atom_stts : Atom, SpecialisedAtom
 	
 	var version : UInt8
 	var flags : UInt32
-	var sampleDurations : [UInt32]
+	var sampleDurations : [UInt32]	//	can these be negative? presentation offsets can be
 	
 	
 	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
 	{
 		let (version,flags,durations) = try await Atom_ctts.DecodeRle(content: &content)
-		
-		return Self(header: header, version: version, flags: flags, sampleDurations: durations)
+		let durationsUnsigned = durations.map{ UInt32($0)	}
+		return Self(header: header, version: version, flags: flags, sampleDurations: durationsUnsigned)
 	}
 }
 
@@ -716,7 +857,7 @@ struct Atom_stbl : Atom, SpecialisedAtom
 		//	gr: this doesn't always exist
 		//	the presentation offset is offset from the decode time
 		let presentationTimeOffsetsAtom : Atom_ctts? = try? children.GetFirstChildAtomAs(fourcc:Atom_ctts.fourcc)
-		let defaultPresentationTimeOffsets = Array(repeating: UInt32(0), count: sampleSizes.count)
+		let defaultPresentationTimeOffsets = Array(repeating: Int32(0), count: sampleSizes.count)
 		let presentationTimeOffsets = presentationTimeOffsetsAtom?.presentationTimeOffsets ?? defaultPresentationTimeOffsets
 		
 		let chunkMetaAtom : Atom_stsc = try children.GetFirstChildAtomAs(fourcc: Atom_stsc.fourcc)
@@ -751,7 +892,7 @@ struct Atom_stbl : Atom, SpecialisedAtom
 
 				let sampleDuration = sampleDurations[sampleIndex]
 				let sampleDecodeTime = currentDecodeTime
-				let samplePresentationTime = sampleDecodeTime + presentationTimeOffset
+				let samplePresentationTime = UInt32( Int32(sampleDecodeTime) + presentationTimeOffset )
 
 				//	convert to proper time
 				let frameDuration = mediaMeta.TimeUnitToMilliseconds(time: sampleDuration)

@@ -147,6 +147,11 @@ public class Mp4VideoSource : VideoSource
 		return header.atoms
 	}
 	
+	public func GetAtomData(atom: any Atom) async throws -> Data 
+	{
+		return try await GetFileData(position: atom.filePosition, size: atom.totalSize)
+	}
+	
 	
 	//func GetFrameData(frame:TrackAndTime,keyframe:Bool) async throws -> Data
 	public func GetFrameData(frame:TrackAndTime) async throws -> Data
@@ -158,12 +163,21 @@ public class Mp4VideoSource : VideoSource
 	
 	func GetFrameData(sample:Mp4Sample) async throws -> Data
 	{
+		return try await GetFileData(position: sample.mdatOffset, size: UInt64(sample.size))
+	}
+	
+	private func GetFileData(position:UInt64,size:UInt64) async throws -> Data
+	{
+		if size == 0
+		{
+			return Data()
+		}
 		let fileData = try Data(contentsOf:url, options: .alwaysMapped)
-		let byteFirstIndex = sample.mdatOffset
-		let byteLastIndex = byteFirstIndex + UInt64(sample.size)
+		let byteFirstIndex = position
+		let byteLastIndex = byteFirstIndex + size - 1
 		if byteFirstIndex < 0 || byteLastIndex >= fileData.count
 		{
-			throw BadDataError("sample file position \(byteFirstIndex)...\(byteLastIndex) out of bounds (\(fileData.count))")
+			throw BadDataError("File position \(byteFirstIndex)...\(byteLastIndex) out of bounds (\(fileData.count))")
 		}
 		let slice = fileData[byteFirstIndex..<byteLastIndex]
 		
@@ -247,9 +261,18 @@ public class Mp4VideoSource : VideoSource
 			{
 				return try await self.GetFrameSampleAndDependencies(track: track, presentationTime: presentationTime,keyframe: false)
 			}
-			let decoder = H264TrackDecoder(codecMeta: codec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
-			return decoder
+			if let h264Codec = codec as? H264Codec
+			{
+				let decoder = VideoTrackDecoder<VideoToolboxDecoder<H264Codec>>(codecMeta: h264Codec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
+				return decoder
+			}
+			if let hevcCodec = codec as? HevcCodec
+			{
+				let decoder = VideoTrackDecoder<VideoToolboxDecoder<HevcCodec>>(codecMeta: hevcCodec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
+				return decoder
+			}
 		}
+
 		return nil
 	}
 	

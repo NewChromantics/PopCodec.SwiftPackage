@@ -88,10 +88,12 @@ public struct Fourcc : CustomStringConvertible, Equatable
 	}
 }
 
+public typealias AtomUid = UInt64	//	using file position at the moment, which may be unique enough!
+
 //	structure for mp4, but currently used as data tree for any file
 public protocol Atom : Identifiable
 {
-	var id : UInt64				{get}
+	var id : AtomUid			{get}
 	var fourcc : Fourcc			{get}
 	var filePosition : UInt64	{get}
 	var headerSize : UInt64		{get}
@@ -106,9 +108,9 @@ public protocol Atom : Identifiable
 	var icon : String	{get}
 }
 
-extension Atom
+public extension Atom
 {
-	var id : UInt64						{	filePosition	}	//	should be unique
+	var id : AtomUid					{	filePosition	}	//	should be unique
 	var totalSize : UInt64				{	contentSize + headerSize	}
 	var contentFilePosition : UInt64	{	filePosition + headerSize	}
 	var totalSizeLabel : String			{	"\(totalSize) bytes"	}
@@ -148,6 +150,28 @@ extension Atom
 		
 		return try await AutoDecodeChildAtoms(content: &contentReader)
 	}
+	
+	func FindAtomInChildren(atomUid:AtomUid) -> (any Atom)?
+	{
+		guard let children = self.childAtoms else
+		{
+			return nil
+		}
+		
+		for child in children
+		{
+			if child.id == atomUid
+			{
+				return child
+			}
+			if let childMatch = child.FindAtomInChildren(atomUid: atomUid)
+			{
+				return childMatch
+			}
+		}
+		
+		return nil
+	}
 }
 
 extension Atom
@@ -176,23 +200,38 @@ struct ErrorAtom : Atom
 {
 	var fourcc: Fourcc
 	var filePosition: UInt64
-	var headerSize: UInt64	{	0	}
-	var contentSize: UInt64	{	0	}
-	var totalSize: UInt64	{	0	}
-	var childAtoms: [any Atom]? = nil
+	var headerSize: UInt64		{	representingAtom?.headerSize ?? 0	}
+	var contentSize: UInt64		{	representingAtom?.contentSize ?? 0	}
+	var totalSize: UInt64		{	representingAtom?.totalSize ?? 0	}
+	var childAtoms: [any Atom]?
+	{
+		representingAtom.map{ [$0] }
+	}
 	
 	var label : String	{	"\(errorContext): \(error.localizedDescription)"	}
 	var icon : String	{	"exclamationmark.triangle.fill"	}
 	
 	var error : Error
 	var errorContext : String
+	var representingAtom : (any Atom)?
 	
+	//	this is for when the error is attached/child of a parent
 	init(errorContext:String,error:Error,parent:any Atom,uidOffset:UInt64=1)
 	{
 		self.error = error
 		self.errorContext = errorContext
 		self.fourcc = Fourcc("Err!")
 		self.filePosition = parent.filePosition + uidOffset	//	used as uid, so uniquify it, slightly.
+	}
+
+	//	this is an error representing the atom that has failed
+	init(errorContext:String,error:Error,erroredAtom:any Atom)
+	{
+		self.error = error
+		self.errorContext = errorContext
+		self.fourcc = Fourcc("Err!")
+		self.representingAtom = erroredAtom
+		self.filePosition = erroredAtom.filePosition
 	}
 }
 
