@@ -86,13 +86,16 @@ extension Array
 }
 
 
-public enum TrackEncoding
+public enum TrackEncoding : CustomStringConvertible
 {
+	
 	case Video(Codec),
 		 Audio,
 		 Text,	//	in future, specifically subtitle or not
-	Unknown
+		 Unknown
 	
+	public var description: String	{	label	}
+
 	var isVideo : Bool
 	{
 		switch self
@@ -106,8 +109,10 @@ public enum TrackEncoding
 	{
 		switch self
 		{
-			case .Video(let codec):	return codec.name
-			default:		return "\(self)"
+			case .Video(let codec):	return "\(codec.name) Video"
+			case .Audio:	return "Audio"
+			case .Text:		return "Text"
+			case .Unknown:	return "Unknown"
 		}
 	}
 	

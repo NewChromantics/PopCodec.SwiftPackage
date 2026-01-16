@@ -196,22 +196,22 @@ extension Atom
 	}
 }
 
-struct ErrorAtom : Atom
+public struct ErrorAtom : Atom
 {
-	var fourcc: Fourcc
-	var filePosition: UInt64
-	var headerSize: UInt64		{	representingAtom?.headerSize ?? 0	}
-	var contentSize: UInt64		{	representingAtom?.contentSize ?? 0	}
-	var totalSize: UInt64		{	representingAtom?.totalSize ?? 0	}
-	var childAtoms: [any Atom]?
+	public var fourcc: Fourcc
+	public var filePosition: UInt64
+	public var headerSize: UInt64		{	representingAtom?.headerSize ?? 0	}
+	public var contentSize: UInt64		{	representingAtom?.contentSize ?? 0	}
+	public var totalSize: UInt64		{	representingAtom?.totalSize ?? 0	}
+	public var childAtoms: [any Atom]?
 	{
 		representingAtom.map{ [$0] }
 	}
 	
-	var label : String	{	"\(errorContext): \(error.localizedDescription)"	}
-	var icon : String	{	"exclamationmark.triangle.fill"	}
+	public var label : String	{	"\(errorContext): \(error.localizedDescription)"	}
+	public var icon : String	{	"exclamationmark.triangle.fill"	}
 	
-	var error : Error
+	public var error : Error
 	var errorContext : String
 	var representingAtom : (any Atom)?
 	
@@ -245,22 +245,25 @@ struct InfoAtom : Atom
 	var childAtoms: [any Atom]? = nil
 	
 	var label : String	{	info	}
-	var icon : String	{	"info.circle"	}
+	static var defaultIcon : String	{	"info.circle"	}
+	var icon : String
 	
 	var info : String
 	
-	init(info:String,parent:any Atom,uidOffset:Int)
+	init(info:String,icon:String=defaultIcon,parent:any Atom,uidOffset:Int)
 	{
 		self.info = info
+		self.icon = icon
 		self.fourcc = Fourcc("Info")
 		self.filePosition = parent.filePosition + UInt64(uidOffset+1)	//	used as uid, so uniquify it, slightly.
 		self.totalSize = 0
 	}
 	
 	//	allow pos + content size to let this atom point at some place in the file
-	init(info:String,filePosition:UInt64,totalSize:UInt64)
+	init(info:String,icon:String=defaultIcon,filePosition:UInt64,totalSize:UInt64)
 	{
 		self.info = info
+		self.icon = icon
 		self.fourcc = Fourcc("Info")
 		self.filePosition = filePosition
 		self.totalSize = totalSize

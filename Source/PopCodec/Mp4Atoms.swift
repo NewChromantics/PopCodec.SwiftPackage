@@ -546,7 +546,7 @@ struct Atom_trak : Atom, SpecialisedAtom
 	var metaAtoms : [any Atom]
 	{[
 		//	these are producing duplicate IDs (file offsets) when there's an erro
-		InfoAtom(info: "\(encoding)", parent: self, uidOffset: 1),
+		InfoAtom(info: "\(encoding)", icon:encoding.icon, parent: self, uidOffset: 1),
 		InfoAtom(info: "\(samplesInFileOrder.count) samples", parent: self, uidOffset: 2),
 		decodeSamplesError.map{ ErrorAtom(errorContext: "Decoding samples", error: $0, parent: self, uidOffset:3) }
 	].compactMap{$0}
