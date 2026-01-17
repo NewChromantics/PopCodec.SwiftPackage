@@ -34,6 +34,7 @@ class Mp4AtomFactory
 			Atom_ftyp.self,
 			Atom_stsd.self,
 			Atom_hev1.self,
+			Atom_hvc1.self,
 			Atom_hvcc.self,
 			Atom_avc1.self,
 			Atom_avcc.self,
@@ -224,72 +225,31 @@ struct Atom_mdhd : Atom
 
 
 //	this contains some image meta, then AVCC & PASP
-struct Atom_avc1 : Atom, SpecialisedAtom
+struct Atom_avc1 : Atom, SpecialisedAtom, VideoCodecAtom
 {
 	static let fourcc = Fourcc("avc1")
 	
 	var header : AtomHeader
+	var videoCodecMeta: VideoCodecMeta
+	var codec : CodecWithMetaAtoms?
 	var childAtoms : [any Atom]?
 	{
-		get { children }
-		set { children = newValue ?? [] }
+		codecMetaAtoms
+		+
+		videoCodecMeta.GetMetaAtoms(parent: self)
+		+
+		videoCodecMeta.childAtoms
 	}
-	var children : [any Atom]
-	var codec : H264Codec
+	var codecMetaAtoms : [any Atom]	{	codec?.GetMetaAtoms(parent: self) ?? []	}
+
 		
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Atom_avc1 
+	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
 	{
-		//	https://github.com/NewChromantics/PopCodecs/blob/master/PopMpeg4.cs#L1024
-		//	stsd isn't very well documented
-		//	https://www.cimarronsystems.com/wp-content/uploads/2017/04/Elements-of-the-H.264-VideoAAC-Audio-MP4-Movie-v2_0.pdf
-		//auto SampleDescriptionSize = Reader.Read32();
-		//auto CodecFourcc = Reader.ReadString(4);
-		let reserved = try await content.ReadBytes(6);
-		let DataReferenceIndex = try await content.Read16();
+		let videoCodecMeta = try await VideoCodecMeta(header: header, data: &content)
 		
-		let Predefines = try await content.ReadBytes(16);
-		let MediaWidth = try await content.Read16();
-		let MediaHeight = try await content.Read16();
-		let HorzResolution = try await content.Read16();
-		let HorzResolutionLow = try await content.Read16();
-		let VertResolution = try await content.Read16();
-		let VertResolutionLow = try await content.Read16();
-		let Reserved1 = try await content.Read8();
-		let FrameCount = try await content.Read8();
-		let ColourDepth = try await content.Read8();
+		let avcc : Atom_avcc? = try? videoCodecMeta.childAtoms.GetFirstChildAtomAs(fourcc: Atom_avcc.fourcc)
 		
-		//	gr: some magic number
-		let MoreData = try await content.ReadBytes(39);
-		
-		let metas : [String:Any] = [
-			"Predefines":Predefines,
-			"MediaWidth":MediaWidth,
-			"MediaHeight":MediaHeight,
-			"HorzResolution":HorzResolution,
-			"HorzResolutionLow":HorzResolutionLow,
-			"VertResolution":VertResolution,
-			"VertResolutionLow":VertResolutionLow,
-			"FrameCount":FrameCount,
-			"ColourDepth":ColourDepth,
-		]
-		let metaAtoms = metas.enumerated().map
-		{
-			index,meta in 
-			InfoAtom(info:"\(meta.key)=\(meta.value)",parent:header,uidOffset:index+10)
-		}
-		
-		
-		//	now there's more atoms!
-		var children : [any Atom] = [] 
-		while content.bytesRemaining > 0
-		{
-			let child = try await content.ReadAtom()
-			children.append(child)
-		}
-		
-		let avcc : Atom_avcc = try children.GetFirstChildAtomAs(fourcc: Atom_avcc.fourcc)
-		
-		return Atom_avc1(header:header, children: metaAtoms+children, codec: avcc.h264 )
+		return Self(header:header, videoCodecMeta:videoCodecMeta, codec: avcc?.codec)
 	}
 }
 
@@ -300,13 +260,13 @@ struct Atom_avcc : Atom, SpecialisedAtom
 	
 	var header : AtomHeader 
 	var version : UInt8
-	var h264 : H264Codec
+	var codec : H264Codec
 
 	var childAtoms : [any Atom]?
 	{
 		[InfoAtom(info:"Version \(version)",parent: self,uidOffset: 0)]
 		+
-		h264.GetMetaAtoms(parent:self)
+		codec.GetMetaAtoms(parent:self)
 	}
 	
 	
@@ -345,26 +305,44 @@ struct Atom_avcc : Atom, SpecialisedAtom
 		let remaining = content.bytesRemaining
 		print("avc1 content size \(remaining)")
 		
-		let atom = Self(header:header, version: version,h264: h264)
+		let atom = Self(header:header, version: version,codec: h264)
 		return atom
 	}
 }
 
 
-struct Atom_hev1 : Atom, SpecialisedAtom
+//	hev1, avc1, hvc1 atoms all have this meta, then child atoms, in their data
+protocol VideoCodecAtom : Atom
 {
-	static let fourcc = Fourcc("hev1")
+	var codec : CodecWithMetaAtoms?	{get}	//	null if we failed to decode specialised codec meta
+	var videoCodecMeta : VideoCodecMeta	{get}
+}
+
+
+struct VideoCodecMeta
+{
+	var reserved_x6 : [UInt8]
+	var dataReferenceIndex : UInt16
+	var predefines_x16 : [UInt8]
 	
-	var header : AtomHeader
-	var childAtoms : [any Atom]?
-	{
-		get { children }
-		set { children = newValue ?? [] }
-	}
-	var children : [any Atom]
-	var codec : HevcCodec
+	var mediaWidth : UInt16
+	var mediaHeight : UInt16
+	var horzResolution : UInt16
+	var horzResolutionLow : UInt16
+	var vertResolution : UInt16
+	var vertResolutionLow : UInt16
+	var reserved_x1 : UInt8
+	var frameCount : UInt8
+	var colourDepth : UInt8
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	var additionalData_x39 : [UInt8]
+	
+	var childAtoms : [any Atom]
+	var dataAfterChildAtoms : [UInt8]
+		
+
+	
+	init(header:any Atom,data:inout DataReader) async throws
 	{
 		//	https://stackoverflow.com/a/43617477/355753
 		//	https://github.com/NewChromantics/PopCodecs/blob/master/PopMpeg4.cs#L1024
@@ -372,53 +350,107 @@ struct Atom_hev1 : Atom, SpecialisedAtom
 		//	https://www.cimarronsystems.com/wp-content/uploads/2017/04/Elements-of-the-H.264-VideoAAC-Audio-MP4-Movie-v2_0.pdf
 		//auto SampleDescriptionSize = Reader.Read32();
 		//auto CodecFourcc = Reader.ReadString(4);
-		let reserved = try await content.ReadBytes(6);
-		let DataReferenceIndex = try await content.Read16();
+		self.reserved_x6 = Array(try await data.ReadBytes(6))
+		self.dataReferenceIndex = try await data.Read16();
 		
-		let Predefines = try await content.ReadBytes(16);
-		let MediaWidth = try await content.Read16();
-		let MediaHeight = try await content.Read16();
-		let HorzResolution = try await content.Read16();
-		let HorzResolutionLow = try await content.Read16();
-		let VertResolution = try await content.Read16();
-		let VertResolutionLow = try await content.Read16();
-		let Reserved1 = try await content.Read8();
-		let FrameCount = try await content.Read8();
-		let ColourDepth = try await content.Read8();
+		self.predefines_x16 = Array(try await data.ReadBytes(16))
+		self.mediaWidth = try await data.Read16();
+		self.mediaHeight = try await data.Read16();
+		self.horzResolution = try await data.Read16();
+		self.horzResolutionLow = try await data.Read16();
+		self.vertResolution = try await data.Read16();
+		self.vertResolutionLow = try await data.Read16();
+		self.reserved_x1 = try await data.Read8();
+		self.frameCount = try await data.Read8();
+		self.colourDepth = try await data.Read8();
 		
 		//	gr: some magic number
-		let MoreData = try await content.ReadBytes(39);
+		self.additionalData_x39 = Array(try await data.ReadBytes(39))
 		
+		//	now there's more atoms!
+		self.childAtoms = []
+		
+		while data.bytesRemaining > 0
+		{
+			do
+			{
+				let child = try await data.ReadAtom()
+				childAtoms.append(child)
+			}
+			catch
+			{
+				childAtoms.append(ErrorAtom(errorContext: "decoding sub atom", error: error,parent: header))
+				break
+			}
+		}
+		
+		self.dataAfterChildAtoms = []
+		if data.bytesRemaining > 0
+		{
+			self.dataAfterChildAtoms = Array(try await data.ReadBytes(Int(data.bytesRemaining)))
+		}
+	}
+	
+	
+	func GetMetaAtoms(parent:any Atom,uidOffset:Int=0) -> [InfoAtom]
+	{
 		let metas : [String:Any] = [
-			"Predefines":Predefines,
-			"MediaWidth":MediaWidth,
-			"MediaHeight":MediaHeight,
-			"HorzResolution":HorzResolution,
-			"HorzResolutionLow":HorzResolutionLow,
-			"VertResolution":VertResolution,
-			"VertResolutionLow":VertResolutionLow,
-			"FrameCount":FrameCount,
-			"ColourDepth":ColourDepth,
+			"Predefines":predefines_x16,
+			"MediaWidth":mediaWidth,
+			"MediaHeight":mediaHeight,
+			"HorzResolution":horzResolution,
+			"HorzResolutionLow":horzResolutionLow,
+			"VertResolution":vertResolution,
+			"VertResolutionLow":vertResolutionLow,
+			"FrameCount":frameCount,
+			"ColourDepth":colourDepth,
 		]
 		let metaAtoms = metas.enumerated().map
 		{
 			index,meta in 
-			InfoAtom(info:"\(meta.key)=\(meta.value)",parent:header,uidOffset:index+10)
+			InfoAtom(info:"\(meta.key)=\(meta.value)",parent:parent,uidOffset:uidOffset+index)
 		}
+		return metaAtoms
+	}
+}
+
+protocol CodecWithMetaAtoms : Codec
+{
+	func GetMetaAtoms(parent:any Atom) -> [any Atom]
+}
+
+extension H264Codec : CodecWithMetaAtoms
+{
+}
+
+extension HevcCodec : CodecWithMetaAtoms
+{
+}
+
+struct Atom_hev1 : Atom, SpecialisedAtom, VideoCodecAtom
+{
+	static let fourcc = Fourcc("hev1")
+	
+	var header : AtomHeader
+	var videoCodecMeta: VideoCodecMeta
+	var codec : CodecWithMetaAtoms?
+	var childAtoms : [any Atom]?
+	{
+		codecMetaAtoms
+		+
+		videoCodecMeta.GetMetaAtoms(parent: self)
+		+
+		videoCodecMeta.childAtoms
+	}
+	var codecMetaAtoms : [any Atom]	{	codec?.GetMetaAtoms(parent: self) ?? []	}
+	
+	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	{
+		let videoCodecMeta = try await VideoCodecMeta(header: header, data: &content)
 		
+		let hvcc : Atom_hvcc? = try? videoCodecMeta.childAtoms.GetFirstChildAtomAs(fourcc: Atom_hvcc.fourcc)
 		
-		//	now there's more atoms!
-		var children : [any Atom] = [] 
-		while content.bytesRemaining > 0
-		{
-			let child = try await content.ReadAtom()
-			children.append(child)
-		}
-		
-		let hvcc : Atom_hvcc? = try? children.GetFirstChildAtomAs(fourcc: Atom_hvcc.fourcc)
-		let codec = hvcc?.codec ?? HevcCodec(parameters: [], naluHeaderSize: 0)
-		
-		return Self(header:header, children: metaAtoms+children, codec: codec)
+		return Self(header:header, videoCodecMeta:videoCodecMeta, codec: hvcc?.codec)
 	}
 }
 
@@ -535,6 +567,35 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 	}
 }
 
+//	like hevc, and hvcc. Atom often used by apple instead of hevc
+struct Atom_hvc1 : Atom, SpecialisedAtom, VideoCodecAtom
+{
+	static let fourcc = Fourcc("hvc1")
+	
+	var header : AtomHeader
+	var videoCodecMeta: VideoCodecMeta
+	var codec : CodecWithMetaAtoms?
+	var childAtoms : [any Atom]?
+	{
+		codecMetaAtoms
+		+
+		videoCodecMeta.GetMetaAtoms(parent: self)
+		+
+		videoCodecMeta.childAtoms
+	}
+	var codecMetaAtoms : [any Atom]	{	codec?.GetMetaAtoms(parent: self) ?? []	}
+	
+	
+	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	{
+		let videoCodecMeta = try await VideoCodecMeta(header: header, data: &content)
+		
+		let hvcc : Atom_hvcc? = try? videoCodecMeta.childAtoms.GetFirstChildAtomAs(fourcc: Atom_hvcc.fourcc)
+		
+		return Self(header:header, videoCodecMeta:videoCodecMeta, codec: hvcc?.codec)
+	}
+}
+
 
 struct Atom_trak : Atom, SpecialisedAtom
 {
@@ -566,14 +627,15 @@ struct Atom_trak : Atom, SpecialisedAtom
 
 		var encoding = TrackEncoding.Unknown
 		
-		if let avc1 : Atom_avc1 = try? children.GetFirstChildAtomAs(fourcc: Atom_avc1.fourcc)
+		let videoCodecAtom = try? children.GetFirstChildAtom
 		{
-			encoding = .Video(avc1.codec)
-		}
+			atom in
+			return atom is VideoCodecAtom
+		} as? VideoCodecAtom
 		
-		if let hevc : Atom_hev1 = try? children.GetFirstChildAtomAs(fourcc: Atom_hev1.fourcc)
+		if let videoCodecAtom// as? VideoCodecAtom
 		{
-			encoding = .Video(hevc.codec)
+			encoding = .Video(videoCodecAtom.codec ?? MissingCodec())
 		}
 		
 		if let mp4a = try? children.GetFirstChildAtom(fourcc: Atom_mp4a.fourcc)

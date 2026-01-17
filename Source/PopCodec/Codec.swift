@@ -14,3 +14,14 @@ public extension Codec
 {
 	var name : String	{	Self.name	}
 }
+
+struct MissingCodec : Codec
+{
+	static var name: String	{	"Missing Codec"	}
+	
+	func GetFormat() throws -> CMVideoFormatDescription 
+	{
+		throw PopCodecError("Missing codec couldnt make CMVideoFormatDescription")
+	}
+	
+}

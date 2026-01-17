@@ -33,22 +33,11 @@ extension Array where Element == (any Atom)
 	//	recursive search
 	func GetFirstChildAtom(fourcc:Fourcc) throws -> any Atom
 	{
-		for element in self
+		try GetFirstChildAtom
 		{
-			if element.fourcc == fourcc
-			{
-				return element
-			}
-			guard let children = element.childAtoms else
-			{
-				continue
-			}
-			if let match = try? children.GetFirstChildAtom(fourcc: fourcc)
-			{
-				return match
-			}
+			atom in
+			return atom.fourcc == fourcc
 		}
-		throw DataNotFound("No child atom \(fourcc)")
 	}
 	
 	func GetFirstChildAtomAs<ExpectedType:Atom>(fourcc:Fourcc) throws -> ExpectedType
@@ -61,6 +50,26 @@ extension Array where Element == (any Atom)
 		return typed
 	}
 	
+	//	recursive
+	func GetFirstChildAtom(where matchFunctor:(any Atom)->Bool) throws -> any Atom
+	{
+		for element in self
+		{
+			if matchFunctor(element)
+			{
+				return element
+			}
+			guard let children = element.childAtoms else
+			{
+				continue
+			}
+			if let match = try? children.GetFirstChildAtom(where: matchFunctor)
+			{
+				return match
+			}
+		}
+		throw DataNotFound("No child atom matched functor")
+	}
 }
 
 public struct Fourcc : CustomStringConvertible, Equatable
@@ -235,20 +244,20 @@ public struct ErrorAtom : Atom
 	}
 }
 
-struct InfoAtom : Atom
+public struct InfoAtom : Atom
 {
-	var fourcc: Fourcc
-	var filePosition: UInt64
-	var headerSize: UInt64	{	0	}
-	var contentSize: UInt64	{	totalSize	}
-	var totalSize: UInt64
-	var childAtoms: [any Atom]? = nil
+	public var fourcc: Fourcc
+	public var filePosition: UInt64
+	public var headerSize: UInt64	{	0	}
+	public var contentSize: UInt64	{	totalSize	}
+	public var totalSize: UInt64
+	public var childAtoms: [any Atom]? = nil
 	
-	var label : String	{	info	}
+	public var label : String	{	info	}
 	static var defaultIcon : String	{	"info.circle"	}
-	var icon : String
+	public var icon : String
 	
-	var info : String
+	public var info : String
 	
 	init(info:String,icon:String=defaultIcon,parent:any Atom,uidOffset:Int)
 	{
