@@ -297,6 +297,10 @@ public class Mp4VideoSource : VideoSource
 		}
 		catch
 		{
+			if hasFoundTypAtom
+			{
+				return true
+			}
 			print("Detecting mp4 error; \(error.localizedDescription). Assuming not mp4")
 			return false
 		}
