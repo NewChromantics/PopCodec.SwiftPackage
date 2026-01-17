@@ -1,17 +1,54 @@
 import Foundation
 
 
-extension MkvTrackType
+extension MkvTrackMeta
 {
-	var encoding : TrackEncoding
+	func GetEncoding() async -> TrackEncoding
 	{
-		switch self
+		switch self.metadata
 		{
-			case .video:	return .Video(MissingCodec())
-			case .audio:	return .Audio
-			case .subtitle:	return .Text
-			default:		return .Unknown
+			case .audio(let meta):	
+				return .Audio
+				
+			case .text(let meta):	
+				return .Text
+			
+			case .video(let meta):
+				let codec = try? await GetVideoCodec(codecData: meta.codecPrivate)
+				return .Video(codec ?? MissingCodec())
+				
+			default:		
+				return .Unknown
 		}
+	}
+	
+	func GetVideoCodec(codecData:Data?) async throws -> any Codec
+	{
+		guard let codecData else
+		{
+			throw DataNotFound("Missing codec data for \(codecID)")
+		}
+		let hevcId = "V_MPEGH/ISO/HEVC"
+		let h264Id = "V_MPEG4/ISO/AVC"
+		if codecID == h264Id
+		{
+			//	data is avcc atom
+			let dummyAtomHeader = try AtomHeader(fourcc: Atom_avcc.fourcc, filePosition: 0, size: UInt32(codecData.count), size64: nil )
+			var dataReader = DataReader(data: codecData)
+			let atom = try await Atom_avcc.Decode(header: dummyAtomHeader, content: &dataReader)
+			return atom.codec
+		}
+		
+		if codecID == hevcId
+		{
+			//	data is avcc atom
+			let dummyAtomHeader = try AtomHeader(fourcc: Atom_hvcc.fourcc, filePosition: 0, size: UInt32(codecData.count), size64: nil)
+			var dataReader = DataReader(data: codecData)
+			let atom = try await Atom_hvcc.Decode(header: dummyAtomHeader, content: &dataReader)
+			return atom.codec
+		}
+		
+		throw PopCodecError("Unknown video codec \(codecID)")
 	}
 }
 
@@ -45,29 +82,52 @@ public class MkvVideoSource : VideoSource
 		let parser = MKVParser(data: fileData)
 		let doc = try parser.parse()
 		
+		//	this is async because of data reader, so precalc it for sync .map
+		var trackEncoding : [UInt64:TrackEncoding] = [:]
+		for track in doc.tracks
+		{
+			let encoding = await track.GetEncoding()
+			trackEncoding[track.uid] = encoding
+		}
+		
+		
 		let trackMetas = doc.tracks.map
 		{
 			track in
-			let trackUid = "\(track.uid)"
-			let duration = track.defaultDuration ?? 0 
-			let encoding = track.type.encoding
-			let samples : [Mp4Sample] = []
 			
-			// Get all samples from track 1
-			let trackSamples = doc.clusters
-				.flatMap { $0.samples }
-				.filter { $0.trackNumber == 1 }
-				.sorted { $0.timestamp < $1.timestamp }
-				.map
+			let trackUid = track.name ?? "\(track.number)"////"\(track.uid)"
+			var duration = track.defaultDuration ?? 0 
+			var trackStartTime = Millisecond(0)
+			let encoding = trackEncoding[track.uid]!
+			
+			let allSamples = doc.clusters.flatMap
+			{
+				cluster in
+				return cluster.samples
+			}
+			let trackSamples = allSamples.filter{ $0.trackNumber == track.number }
+			let samples = trackSamples.map
 			{
 				mkvSample in
-				mkvSample.
-				return Mp4Sample(mdatOffset: <#T##UInt64#>, size: <#T##UInt32#>, decodeTime: <#T##UInt64#>, presentationTime: <#T##UInt64#>, duration: <#T##UInt64#>, isKeyframe: <#T##Bool#>)
+				let filePosition = UInt64(mkvSample.fileOffset)
+				let size = UInt32(mkvSample.size)
+				let presentationTime = Millisecond(mkvSample.timestamp)
+				let decodeTime = Millisecond(mkvSample.decodeTimestamp) ?? presentationTime
+				let duration = mkvSample.duration ?? track.defaultDuration ?? 0
+				return Mp4Sample(mdatOffset: filePosition, size: size, decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: mkvSample.isKeyframe)
 			}
 			
-			return TrackMeta(id: trackUid, duration: duration, encoding: encoding, samples: samples)
+			
+			if let firstSample = samples.first, let lastSample = samples.last
+			{
+				
+				duration = lastSample.presentationEndTime - firstSample.presentationTime
+			}
+			return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
 		}
 		let header = MkvHeader(atoms: [], tracks: trackMetas)
+	
+		defaultSelectedTrack = trackMetas.first{$0.encoding.isVideo}?.id
 		
 		return header
 	}
@@ -233,6 +293,7 @@ public class MkvVideoSource : VideoSource
 }
 
 
+
 import Foundation
 
 // MARK: - EBML Element IDs
@@ -278,6 +339,7 @@ enum EBMLElementID: UInt32 {
 	case language = 0x22B59C
 	case codecID = 0x86
 	case codecName = 0x258688
+	case codecPrivate = 0x63A2
 	
 	// Video
 	case video = 0xE0
@@ -325,26 +387,45 @@ enum MkvTrackType: UInt8 {
 	case control = 32
 }
 
+// MARK: - Video Track Metadata
+struct MkvVideoMeta {
+	let pixelWidth: UInt64
+	let pixelHeight: UInt64
+	let displayWidth: UInt64?
+	let displayHeight: UInt64?
+	let codecPrivate: Data?  // Codec-specific initialization data (e.g., H.264 SPS/PPS)
+}
+
+// MARK: - Audio Track Metadata
+struct MkvAudioMeta {
+	let samplingFrequency: Double
+	let channels: UInt64
+	let bitDepth: UInt64?
+	let codecPrivate: Data?  // Codec-specific initialization data
+}
+
+// MARK: - Text/Subtitle Track Metadata
+struct MkvTextMeta {
+	// Add subtitle-specific metadata as needed
+}
+
+// MARK: - Track Metadata (Typed Enum)
+enum MkvTrackMetadata {
+	case video(MkvVideoMeta)
+	case audio(MkvAudioMeta)
+	case text(MkvTextMeta)
+	case other
+}
+
 // MARK: - Track Info
 struct MkvTrackMeta {
 	let number: UInt64
 	let uid: UInt64
-	let type: MkvTrackType
 	let codecID: String
 	let name: String?
 	let language: String?
 	let defaultDuration: UInt64?
-	
-	// Video specific
-	let pixelWidth: UInt64?
-	let pixelHeight: UInt64?
-	let displayWidth: UInt64?
-	let displayHeight: UInt64?
-	
-	// Audio specific
-	let samplingFrequency: Double?
-	let channels: UInt64?
-	let bitDepth: UInt64?
+	let metadata: MkvTrackMetadata
 }
 
 // MARK: - Segment Info
@@ -359,16 +440,29 @@ struct SegmentInfo {
 // MARK: - Sample/Frame Data
 struct MkvSample {
 	let trackNumber: UInt64
-	let timestamp: Int64  // In nanoseconds
+	let timestamp: Int64  // Presentation timestamp in milliseconds
+	let decodeTimestamp: Int64  // Decode timestamp in milliseconds
 	let isKeyframe: Bool
-	let data: Data
+	let fileOffset: Int   // Offset in the file where sample data starts
+	let size: Int         // Size of sample data in bytes
 	let duration: UInt64? // In track time scale units
+	
+	/// Read the sample data from the original Data object
+	func readData(from data: Data) -> Data? {
+		guard fileOffset + size <= data.count else { return nil }
+		return data[fileOffset..<fileOffset + size]
+	}
 }
 
 // MARK: - Cluster
 struct MkvCluster {
 	let timestamp: UInt64
 	let samples: [MkvSample]
+	
+	/// Returns samples sorted by decode timestamp for proper decoding
+	func samplesByDecodeOrder() -> [MkvSample] {
+		samples.sorted { $0.decodeTimestamp < $1.decodeTimestamp }
+	}
 }
 
 // MARK: - MKV Document
@@ -379,6 +473,18 @@ struct MKVDocument {
 	let segmentInfo: SegmentInfo?
 	let tracks: [MkvTrackMeta]
 	let clusters: [MkvCluster]
+	
+	/// Returns all samples from all clusters sorted by decode order
+	func allSamplesByDecodeOrder() -> [MkvSample] {
+		clusters.flatMap { $0.samplesByDecodeOrder() }
+	}
+	
+	/// Returns samples for a specific track sorted by decode order
+	func samplesByDecodeOrder(forTrack trackNumber: UInt64) -> [MkvSample] {
+		clusters
+			.flatMap { $0.samplesByDecodeOrder() }
+			.filter { $0.trackNumber == trackNumber }
+	}
 }
 
 // MARK: - MKV Parser
@@ -386,6 +492,7 @@ class MKVParser {
 	private let data: Data
 	private var offset: Int = 0
 	private var segmentDataOffset: Int = 0  // Track where segment data starts
+	private var decodeTimestampCounters: [UInt64: Int64] = [:]  // Track number -> decode timestamp counter
 	
 	init(data: Data) {
 		self.data = data
@@ -595,6 +702,16 @@ class MKVParser {
 		return String(data: stringData, encoding: .utf8) ?? ""
 	}
 	
+	private func readData(size: Int) throws -> Data {
+		guard offset + size <= data.count else {
+			throw MKVError.endOfData
+		}
+		
+		let result = data[offset..<offset + size]
+		offset += size
+		return Data(result)
+	}
+	
 	// MARK: - Segment Info Parsing
 	private func parseSegmentInfo(size: Int) throws -> SegmentInfo {
 		let endOffset = offset + size
@@ -663,6 +780,7 @@ class MKVParser {
 		var name: String?
 		var language: String?
 		var defaultDuration: UInt64?
+		var codecPrivate: Data?
 		var pixelWidth: UInt64?
 		var pixelHeight: UInt64?
 		var displayWidth: UInt64?
@@ -684,6 +802,8 @@ class MKVParser {
 					trackType = MkvTrackType(rawValue: UInt8(type)) ?? .video
 				case .codecID:
 					codecID = try readString(size: Int(elem.size))
+				case .codecPrivate:
+					codecPrivate = try readData(size: Int(elem.size))
 				case .name:
 					name = try readString(size: Int(elem.size))
 				case .language:
@@ -699,21 +819,46 @@ class MKVParser {
 			}
 		}
 		
+		// Build typed metadata based on track type
+		let metadata: MkvTrackMetadata
+		switch trackType {
+			case .video:
+				if let width = pixelWidth, let height = pixelHeight {
+					metadata = .video(MkvVideoMeta(
+						pixelWidth: width,
+						pixelHeight: height,
+						displayWidth: displayWidth,
+						displayHeight: displayHeight,
+						codecPrivate: codecPrivate
+					))
+				} else {
+					metadata = .other
+				}
+			case .audio:
+				if let freq = samplingFrequency, let ch = channels {
+					metadata = .audio(MkvAudioMeta(
+						samplingFrequency: freq,
+						channels: ch,
+						bitDepth: bitDepth,
+						codecPrivate: codecPrivate
+					))
+				} else {
+					metadata = .other
+				}
+			case .subtitle:
+				metadata = .text(MkvTextMeta())
+			default:
+				metadata = .other
+		}
+		
 		return MkvTrackMeta(
 			number: number,
 			uid: uid,
-			type: trackType,
 			codecID: codecID,
 			name: name,
 			language: language,
 			defaultDuration: defaultDuration,
-			pixelWidth: pixelWidth,
-			pixelHeight: pixelHeight,
-			displayWidth: displayWidth,
-			displayHeight: displayHeight,
-			samplingFrequency: samplingFrequency,
-			channels: channels,
-			bitDepth: bitDepth
+			metadata: metadata
 		)
 	}
 	
@@ -832,24 +977,30 @@ class MKVParser {
 		
 		let isKeyframe = (flags & 0x80) != 0
 		
-		// Read frame data
+		// Calculate frame data location
+		let frameDataOffset = offset
 		let dataSize = endOffset - offset
-		guard offset + dataSize <= data.count else {
+		guard frameDataOffset + dataSize <= data.count else {
 			throw MKVError.endOfData
 		}
 		
-		let frameData = data[offset..<offset + dataSize]
+		// Skip over the data (don't copy it)
 		offset += dataSize
 		
-		// Calculate absolute timestamp in nanoseconds
+		// Calculate absolute timestamp in milliseconds
 		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
-		let timestampNs = absoluteTimestamp * Int64(timestampScale)
+		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
+		
+		// Assign decode timestamp (in file order)
+		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
 		
 		return MkvSample(
 			trackNumber: trackNumber,
-			timestamp: timestampNs,
+			timestamp: timestampMs,
+			decodeTimestamp: decodeTimestamp,
 			isKeyframe: isKeyframe,
-			data: Data(frameData),
+			fileOffset: frameDataOffset,
+			size: dataSize,
 			duration: nil
 		)
 	}
@@ -857,7 +1008,8 @@ class MKVParser {
 	private func parseBlockGroup(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64) throws -> MkvSample {
 		let endOffset = offset + size
 		
-		var blockData: Data?
+		var frameDataOffset: Int = 0
+		var frameDataSize: Int = 0
 		var trackNumber: UInt64 = 0
 		var relativeTimestamp: Int16 = 0
 		var isKeyframe = true
@@ -890,13 +1042,14 @@ class MKVParser {
 					
 					isKeyframe = (flags & 0x80) != 0
 					
-					// Read frame data
+					// Calculate frame data location
+					frameDataOffset = offset
 					let remainingSize = Int(elem.size) - (offset - blockStartOffset)
 					guard offset + remainingSize <= data.count else {
 						throw MKVError.endOfData
 					}
 					
-					blockData = data[offset..<offset + remainingSize]
+					frameDataSize = remainingSize
 					offset += remainingSize
 					
 				case .blockDuration:
@@ -911,21 +1064,38 @@ class MKVParser {
 			}
 		}
 		
-		guard let frameData = blockData else {
+		guard frameDataSize > 0 else {
 			throw MKVError.missingBlockData
 		}
 		
-		// Calculate absolute timestamp in nanoseconds
+		// Calculate absolute timestamp in milliseconds
 		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
-		let timestampNs = absoluteTimestamp * Int64(timestampScale)
+		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
+		
+		// Assign decode timestamp (in file order)
+		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
 		
 		return MkvSample(
 			trackNumber: trackNumber,
-			timestamp: timestampNs,
+			timestamp: timestampMs,
+			decodeTimestamp: decodeTimestamp,
 			isKeyframe: isKeyframe,
-			data: frameData,
+			fileOffset: frameDataOffset,
+			size: frameDataSize,
 			duration: duration
 		)
+	}
+	
+	// MARK: - Decode Timestamp Assignment
+	private func assignDecodeTimestamp(trackNumber: UInt64, timestampScale: Int64) -> Int64 {
+		// Decode timestamp is based on file order, not presentation order
+		// Each sample gets a sequential decode time based on when it appears in the file
+		let currentCounter = decodeTimestampCounters[trackNumber] ?? 0
+		decodeTimestampCounters[trackNumber] = currentCounter + 1
+		
+		// Convert counter to milliseconds using the timestamp scale
+		// This creates sequential decode timestamps in the same units as presentation timestamps
+		return (currentCounter * timestampScale) / 1_000_000
 	}
 }
 
@@ -961,14 +1131,51 @@ enum MKVError: Error {
  
  for track in document.tracks {
  print("\nTrack #\(track.number)")
- print("Type: \(track.type)")
  print("Codec: \(track.codecID)")
  
- if track.type == .video {
- print("Resolution: \(track.pixelWidth ?? 0)x\(track.pixelHeight ?? 0)")
- } else if track.type == .audio {
- print("Sample Rate: \(track.samplingFrequency ?? 0) Hz")
- print("Channels: \(track.channels ?? 0)")
+ switch track.metadata {
+ case .video(let videoMeta):
+ print("Type: Video")
+ print("Resolution: \(videoMeta.pixelWidth)x\(videoMeta.pixelHeight)")
+ if let displayWidth = videoMeta.displayWidth, let displayHeight = videoMeta.displayHeight {
+ print("Display: \(displayWidth)x\(displayHeight)")
+ }
+ 
+ // Access codec private data (e.g., H.264 SPS/PPS)
+ if let codecPrivate = videoMeta.codecPrivate {
+ print("Codec Private Data: \(codecPrivate.count) bytes")
+ 
+ // For H.264 (V_MPEG4/ISO/AVC), this contains the avcC atom
+ // which includes SPS, PPS, and other decoder configuration
+ if track.codecID == "V_MPEG4/ISO/AVC" {
+ print("H.264 configuration data available")
+ // Parse avcC structure here if needed
+ }
+ }
+ 
+ case .audio(let audioMeta):
+ print("Type: Audio")
+ print("Sample Rate: \(audioMeta.samplingFrequency) Hz")
+ print("Channels: \(audioMeta.channels)")
+ if let bitDepth = audioMeta.bitDepth {
+ print("Bit Depth: \(bitDepth)")
+ }
+ 
+ // Access codec private data (e.g., AAC AudioSpecificConfig)
+ if let codecPrivate = audioMeta.codecPrivate {
+ print("Codec Private Data: \(codecPrivate.count) bytes")
+ 
+ // For AAC (A_AAC), this contains the AudioSpecificConfig
+ if track.codecID == "A_AAC" {
+ print("AAC configuration data available")
+ // Parse AudioSpecificConfig here if needed
+ }
+ }
+ 
+ case .text:
+ print("Type: Subtitle/Text")
+ case .other:
+ print("Type: Other/Unknown")
  }
  }
  
@@ -980,25 +1187,58 @@ enum MKVError: Error {
  print("Cluster timestamp: \(cluster.timestamp)")
  print("Samples in cluster: \(cluster.samples.count)")
  
+ // Samples in presentation order
  for sample in cluster.samples {
  print("  Track: \(sample.trackNumber), " +
- "Timestamp: \(sample.timestamp) ns, " +
+ "PTS: \(sample.timestamp) ms, " +
+ "DTS: \(sample.decodeTimestamp) ms, " +
  "Keyframe: \(sample.isKeyframe), " +
- "Size: \(sample.data.count) bytes")
+ "Offset: \(sample.fileOffset), " +
+ "Size: \(sample.size) bytes")
+ }
+ 
+ // Samples in decode order
+ print("\nDecode order:")
+ for sample in cluster.samplesByDecodeOrder() {
+ print("  DTS: \(sample.decodeTimestamp) ms, " +
+ "PTS: \(sample.timestamp) ms, " +
+ "Offset: \(sample.fileOffset)")
  }
  }
  
  // Extract samples for a specific track (e.g., track #1)
- let trackSamples = document.clusters
+ // In presentation order
+ let trackSamplesPTS = document.clusters
  .flatMap { $0.samples }
  .filter { $0.trackNumber == 1 }
  .sorted { $0.timestamp < $1.timestamp }
  
- print("\nTrack 1 has \(trackSamples.count) samples")
+ print("\nTrack 1 has \(trackSamplesPTS.count) samples (presentation order)")
+ 
+ // In decode order (correct order for feeding to decoder)
+ let trackSamplesDecode = document.samplesByDecodeOrder(forTrack: 1)
+ print("Track 1 has \(trackSamplesDecode.count) samples (decode order)")
  
  // Get first keyframe
- if let firstKeyframe = trackSamples.first(where: { $0.isKeyframe }) {
- print("First keyframe at: \(firstKeyframe.timestamp) ns")
- print("Keyframe data: \(firstKeyframe.data.count) bytes")
+ if let firstKeyframe = trackSamplesDecode.first(where: { $0.isKeyframe }) {
+ print("First keyframe PTS: \(firstKeyframe.timestamp) ms")
+ print("First keyframe DTS: \(firstKeyframe.decodeTimestamp) ms")
+ print("File offset: \(firstKeyframe.fileOffset)")
+ print("Keyframe size: \(firstKeyframe.size) bytes")
+ 
+ // Read the actual frame data when needed
+ if let frameData = firstKeyframe.readData(from: data) {
+ print("Successfully read \(frameData.count) bytes")
+ }
+ }
+ 
+ // Example: Feed samples to decoder in correct order
+ for sample in trackSamplesDecode {
+ // Read sample data only when needed
+ if let sampleData = sample.readData(from: data) {
+ // Decode sampleData at DTS: sample.decodeTimestamp (ms)
+ // Display/present frame at PTS: sample.timestamp (ms)
+ // Note: For codecs with B-frames, DTS != PTS
+ }
  }
  */
