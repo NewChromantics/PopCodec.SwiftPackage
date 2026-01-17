@@ -143,7 +143,7 @@ struct MkvHeader
 struct EbmlAtom : Atom
 {
 	var fourcc: Fourcc			{	element.type?.fourcc ?? Fourcc("????")	}
-	var filePosition: UInt64	{	UInt64(element.dataOffset)	}	//	gr: I think this value is written too late and may be incorrect
+	var filePosition: UInt64	{	UInt64(element.filePosition)	}	//	gr: I think this value is written too late and may be incorrect
 	var headerSize: UInt64		{	UInt64(element.headerSize)	}
 	var contentSize: UInt64		{	element.size	}
 	var totalSize : UInt64		{	UInt64(element.totalSize)	}
@@ -424,9 +424,43 @@ extension EBMLElementID
 	{
 		switch self
 		{
-			case .ebml:		return Fourcc("embl")
-			case .segment:	return Fourcc("Segm")
-			default:		return Fourcc(self.rawValue)
+			case .ebml:				return Fourcc("embl")
+			case .ebmlVersion:		return Fourcc("embV")
+			case .ebmlReadVersion:	return Fourcc("erdV")
+			case .ebmlMaxIDLength:	return Fourcc("eLen")
+			case .ebmlMaxSizeLength:	return Fourcc("eSiz")
+				
+			case .docType:			return Fourcc("docT")
+			case .docTypeVersion:		return Fourcc("docV")
+			case .docTypeReadVersion:	return Fourcc("docR")
+				
+			case .segment:			return Fourcc("Segm")
+				
+			case .info:				return Fourcc("Info")
+			case .timestampScale:	return Fourcc("TSsc")
+			case .title:			return Fourcc("Titl")
+
+			case .tracks:			return Fourcc("Trks")
+			case .trackEntry:		return Fourcc("Trke")
+			case .trackNumber:		return Fourcc("Trk#")
+			case .trackUID:			return Fourcc("Trk$")
+			case .trackType:		return Fourcc("TrkT")
+				
+			case .name:				return Fourcc("Name")
+			case .language:			return Fourcc("Lang")
+			case .codecID:			return Fourcc("Cdc#")
+			case .codecName:		return Fourcc("Cdec")
+			case .codecPrivate:		return Fourcc("CdcD")
+
+			case .video:			return Fourcc("Vido")
+			
+			case .audio:			return Fourcc("Audo")
+				
+			case .cluster:			return Fourcc("Clst")
+			case .referenceBlock:	return Fourcc("blkR")
+			case .blockDuration:	return Fourcc("blkD")
+			case .duration:			return Fourcc("Dura")
+			default:				return Fourcc(self.rawValue)
 		}
 	}
 }
@@ -692,17 +726,23 @@ class MKVParser {
 		
 		while offset < segmentEnd && offset < data.count {
 			guard let elem = try? readElement() else { break }
-			segmentChildElements.append(elem)
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .info:
 					segmentInfo = try parseSegmentInfo(size: Int(elem.size))
+					segmentChildElements.append(elem)
+
 				case .tracks:
 					tracks = try parseTracks(size: Int(elem.size))
+					segmentChildElements.append(elem)
+
 				case .cluster:
+					//	gr: skipping clusters atm as there's a LOT
+					//segmentChildElements.append(elem)
 					if let cluster = try? parseCluster(size: Int(elem.size), segmentInfo: segmentInfo) {
 						clusters.append(cluster)
 					}
+
 				default:
 					offset += Int(elem.size)
 			}
