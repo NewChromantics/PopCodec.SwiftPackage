@@ -24,7 +24,7 @@ public struct TrackAndTime : Hashable
 
 public func DetectVideoSourceType(headerData:Data) async -> [VideoSource.Type]
 {
-	let possibleVideoTypes = [Mp4VideoSource.self]
+	let possibleVideoTypes : [VideoSource.Type] = [Mp4VideoSource.self,MkvVideoSource.self]
 	var detectedVideoTypes : [VideoSource.Type] = []
 	
 	for possibleVideoType in possibleVideoTypes

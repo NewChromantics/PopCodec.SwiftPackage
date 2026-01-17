@@ -278,6 +278,9 @@ public class Mp4VideoSource : VideoSource
 	
 	public static func DetectIsFormat(headerData: Data) async -> Bool 
 	{
+		//	only need to search start of mp4
+		let headerData = headerData[0..<1000]
+		
 		var reader = DataReader(data: headerData)
 		var hasFoundTypAtom = false
 		do
