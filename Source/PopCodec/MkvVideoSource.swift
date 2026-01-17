@@ -1,6 +1,87 @@
 import Foundation
 
 
+extension ByteReader
+{
+	mutating func ReadEbmlElement() async throws -> EBMLElement
+	{
+		let startingPosition = self.globalPosition
+		let id = try await ReadEbmlElementId()
+		let size = try await readVIntSize()
+		
+		//	check how many bytes we've read
+		let currentPosition = self.globalPosition
+		let bytesRead = currentPosition - startingPosition
+		let headerSize = bytesRead
+		return EBMLElement(id: id, size: size, dataOffset: Int(startingPosition), headerSize: Int(headerSize) )
+	}
+	
+	//	very slightly different to readVIntSize()
+	mutating func ReadEbmlElementId() async throws -> UInt32
+	{
+		let firstByte = try await Read8()
+		var length = 0
+		var mask: UInt8 = 0x80
+		
+		// Determine length by finding first set bit
+		for i in 0..<8 {
+			if (firstByte & mask) != 0 {
+				length = i + 1
+				break
+			}
+			mask >>= 1
+		}
+		
+		guard length > 0 && length <= 4 else {
+			throw MKVError.invalidElementID
+		}
+		
+		// Read all bytes including the marker bit
+		var value: UInt32 = UInt32(firstByte)
+		//offset += 1
+		
+		for _ in 1..<length 
+		{
+			let nextByte = try await Read8()
+			value = (value << 8) | UInt32(nextByte)
+		}
+		
+		return value
+	}
+	
+	//	variable length int
+	mutating func readVIntSize() async throws -> UInt64 
+	{
+		let firstByte = try await Read8()
+		var length = 0
+		var mask: UInt8 = 0x80
+		
+		for i in 0..<8 {
+			if (firstByte & mask) != 0 {
+				length = i + 1
+				break
+			}
+			mask >>= 1
+		}
+		
+		guard length > 0 else {
+			throw MKVError.invalidVInt
+		}
+		
+		// Strip the marker bit for size values
+		var value: UInt64 = UInt64(firstByte & (mask - 1))
+		
+		for _ in 1..<length 
+		{
+			let nextByte = try await Read8()
+			value = (value << 8) | UInt64(nextByte)
+		}
+		
+		return value
+	}
+}
+
+
 extension MkvTrackMeta
 {
 	func GetEncoding() async -> TrackEncoding
@@ -59,6 +140,32 @@ struct MkvHeader
 	var tracks : [TrackMeta]
 }
 
+struct EbmlAtom : Atom
+{
+	var fourcc: Fourcc			{	element.type?.fourcc ?? Fourcc("????")	}
+	var filePosition: UInt64	{	UInt64(element.dataOffset)	}	//	gr: I think this value is written too late and may be incorrect
+	var headerSize: UInt64		{	UInt64(element.headerSize)	}
+	var contentSize: UInt64		{	element.size	}
+	var totalSize : UInt64		{	UInt64(element.totalSize)	}
+	var childAtoms: [any Atom]?	{	children }
+	
+	var element : EBMLElement
+	var children : [EbmlAtom]?
+	
+	
+	init(element:EBMLElement,children:[EBMLElement])
+	{
+		self.element = element
+		if !children.isEmpty
+		{
+			self.children = children.map
+			{
+				return EbmlAtom(element: $0, children: [])
+			}
+		}
+	}
+}
+
 
 public class MkvVideoSource : VideoSource
 {
@@ -80,7 +187,17 @@ public class MkvVideoSource : VideoSource
 		var fileData = try Data(contentsOf:url, options: .alwaysMapped)
 		var fileReader = DataReader(data: fileData)
 		let parser = MKVParser(data: fileData)
+		
+		var atoms : [any Atom] = [] 
+		
 		let doc = try parser.parse()
+		{
+			//	turn elements into atoms
+			element,childElements in
+			let atom = EbmlAtom(element: element,children:childElements)
+			atoms.append(atom)
+		}		
+		
 		
 		//	this is async because of data reader, so precalc it for sync .map
 		var trackEncoding : [UInt64:TrackEncoding] = [:]
@@ -125,8 +242,9 @@ public class MkvVideoSource : VideoSource
 			}
 			return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
 		}
-		let header = MkvHeader(atoms: [], tracks: trackMetas)
-	
+		
+		let header = MkvHeader(atoms: atoms, tracks: trackMetas)
+
 		defaultSelectedTrack = trackMetas.first{$0.encoding.isVideo}?.id
 		
 		return header
@@ -279,9 +397,15 @@ public class MkvVideoSource : VideoSource
 		
 		do
 		{
-			//	todo: reduce how much to read
-			let mkv = MKVParser(data: headerData)
-			let doc = try mkv.parse()
+			//	read first element and check it has the correct id
+			let firstElement = try await reader.ReadEbmlElement()
+			if firstElement.type != EBMLElementID.ebml
+			{
+				throw PopCodecError("First Ebml id is incorrect")
+			}
+			
+			//let mkv = MKVParser(data: headerData)
+			//let doc = try mkv.parse()
 			return true
 		}
 		catch
@@ -292,6 +416,20 @@ public class MkvVideoSource : VideoSource
 	}
 }
 
+
+
+extension EBMLElementID
+{
+	var fourcc : Fourcc
+	{
+		switch self
+		{
+			case .ebml:		return Fourcc("embl")
+			case .segment:	return Fourcc("Segm")
+			default:		return Fourcc(self.rawValue)
+		}
+	}
+}
 
 
 import Foundation
@@ -366,15 +504,18 @@ enum EBMLElementID: UInt32 {
 
 // MARK: - EBML Element
 struct EBMLElement {
-	let id: UInt32
+	let id : UInt32
+	var type : EBMLElementID?	{	EBMLElementID(rawValue: id)	}
 	let size: UInt64
-	let dataOffset: Int
+	var filePosition : UInt64	{	UInt64(dataOffset - headerSize)	}
+	let dataOffset: Int			//	gr; I think parser is storing this in the wrong place (after header)
 	let headerSize: Int
 	
 	var totalSize: Int {
 		headerSize + Int(size)
 	}
 }
+
 
 // MARK: - Track Types
 enum MkvTrackType: UInt8 {
@@ -499,7 +640,7 @@ class MKVParser {
 	}
 	
 	// MARK: - Public Parse Method
-	func parse() throws -> MKVDocument {
+	func parse(onElement:(EBMLElement,[EBMLElement])->Void) throws -> MKVDocument {
 		offset = 0
 		
 		// Parse EBML header
@@ -507,14 +648,18 @@ class MKVParser {
 			  ebmlElement.id == EBMLElementID.ebml.rawValue else {
 			throw MKVError.invalidEBMLHeader
 		}
+		onElement(ebmlElement,[])
 		
 		var ebmlVersion: UInt64 = 1
 		var docType = ""
 		var docTypeVersion: UInt64 = 1
 		
+		//	root elements
 		let ebmlEnd = offset + Int(ebmlElement.size)
 		while offset < ebmlEnd {
 			guard let elem = try? readElement() else { break }
+			
+			onElement(elem,[])
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .ebmlVersion:
@@ -533,7 +678,7 @@ class MKVParser {
 			  segmentElement.id == EBMLElementID.segment.rawValue else {
 			throw MKVError.invalidSegment
 		}
-		
+
 		segmentDataOffset = offset  // Remember where segment data starts
 		
 		var segmentInfo: SegmentInfo?
@@ -541,8 +686,13 @@ class MKVParser {
 		var clusters: [MkvCluster] = []
 		
 		let segmentEnd = offset + Int(segmentElement.size)
+		
+		//	stored for data visulation, not parsing
+		var segmentChildElements : [EBMLElement] = []
+		
 		while offset < segmentEnd && offset < data.count {
 			guard let elem = try? readElement() else { break }
+			segmentChildElements.append(elem)
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .info:
@@ -558,6 +708,8 @@ class MKVParser {
 			}
 		}
 		
+		onElement(segmentElement,segmentChildElements)
+	
 		return MKVDocument(
 			ebmlVersion: ebmlVersion,
 			docType: docType,
@@ -579,6 +731,7 @@ class MKVParser {
 		let size = try readVIntSize()
 		let headerSize = offset - startOffset
 		
+		//	this data offset is the END...
 		return EBMLElement(
 			id: id,
 			size: size,
