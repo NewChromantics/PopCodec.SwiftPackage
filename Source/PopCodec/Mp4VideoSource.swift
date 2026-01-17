@@ -105,7 +105,7 @@ public class Mp4VideoSource : VideoSource
 	var url : URL
 	var readHeaderTask : Task<Mp4Header,Error>!	//	promise
 	
-	public init(url:URL)
+	required public init(url:URL)
 	{
 		self.url = url
 		
@@ -276,6 +276,29 @@ public class Mp4VideoSource : VideoSource
 		return nil
 	}
 	
+	public static func DetectIsFormat(headerData: Data) async -> Bool 
+	{
+		var reader = DataReader(data: headerData)
+		var hasFoundTypAtom = false
+		do
+		{
+			try await ReadMp4Header(reader: &reader)
+			{
+				atom in
+				if atom.fourcc == Fourcc("ftyp")
+				{
+					hasFoundTypAtom = true
+				}
+			}
+			return hasFoundTypAtom
+		}
+		catch
+		{
+			print("Detecting mp4 error; \(error.localizedDescription). Assuming not mp4")
+			return false
+		}
+	}
 	
+
 	
 }

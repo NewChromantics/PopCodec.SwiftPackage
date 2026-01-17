@@ -22,6 +22,25 @@ public struct TrackAndTime : Hashable
 }
 
 
+public func DetectVideoSourceType(headerData:Data) async -> [VideoSource.Type]
+{
+	let possibleVideoTypes = [Mp4VideoSource.self]
+	var detectedVideoTypes : [VideoSource.Type] = []
+	
+	for possibleVideoType in possibleVideoTypes
+	{
+		let isType = await possibleVideoType.DetectIsFormat(headerData: headerData)
+		if !isType
+		{
+			continue
+		}
+		detectedVideoTypes.append( possibleVideoType )
+	}
+	
+	return detectedVideoTypes
+}
+
+
 
 enum BinaryChopCompare
 {
@@ -248,11 +267,15 @@ public struct TrackMeta : Identifiable
 	}
 }
 
+
 public protocol VideoSource : ObservableObject
 {
 	var typeName : String			{	get	}
 	var defaultSelectedTrack : TrackUid?	{	get	}		//	if nothing selected, "show" this track (ie. default to pixels in video)
 	
+	static func DetectIsFormat(headerData:Data) async -> Bool
+	
+	init(url:URL)
 	func GetTrackMetas() async throws -> [TrackMeta]
 	func GetAtoms() async throws -> [any Atom]				//	meta essentially
 	func GetFrameData(frame:TrackAndTime) async throws -> Data
@@ -307,6 +330,11 @@ class VideoSourceFactory
 
 class TestVideoSource : VideoSource
 {
+	
+	required init(url: URL) 
+	{
+	}
+	
 	var defaultSelectedTrack: TrackUid?	{"Video1"}
 	var typeName: String	{"TestVideoSource"}
 	
@@ -324,5 +352,10 @@ class TestVideoSource : VideoSource
 			TrackMeta(id: "Video1", duration: 60*1000, encoding: .Video(H264Codec()), samples: []),
 			TrackMeta(id: "Audio1",  duration: 1*1000, encoding: .Audio, samples: [])
 			]
+	}
+	
+	static func DetectIsFormat(headerData: Data) async -> Bool 
+	{
+		return false
 	}
 }

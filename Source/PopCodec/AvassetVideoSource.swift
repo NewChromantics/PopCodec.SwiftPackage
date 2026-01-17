@@ -32,6 +32,11 @@ extension AVAssetTrack
 
 class AVAssetVideoSource : VideoSource
 {
+	static func DetectIsFormat(headerData: Data) -> Bool 
+	{
+		return false
+	}
+	
 	var defaultSelectedTrack: TrackUid?{nil}
 	var typeName: String	{"AVAssetVideoSource"}
 	
@@ -40,7 +45,7 @@ class AVAssetVideoSource : VideoSource
 	
 	var loadAssetTask : Task<[TrackMeta],Error>!
 	
-	init(url:URL)
+	required init(url:URL)
 	{
 		self.url = url
 		self.asset = AVURLAsset(url: url)
