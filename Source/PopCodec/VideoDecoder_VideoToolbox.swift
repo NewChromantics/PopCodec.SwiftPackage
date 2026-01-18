@@ -158,7 +158,10 @@ extension Data
 }
 
 
-
+struct DecodeBatch
+{
+	var frames : [Mp4Sample]
+}
 
 class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 {
@@ -170,8 +173,14 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 	//	continue decoding when possible
 	var lastSubmitedDecodeTime : Millisecond? = nil
 	
-	required init(codecMeta:CodecType,onFrameDecoded: @escaping (CoreVideoFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
+	//	do these need to be individual batches?
+	var decodeQueue : [DecodeBatch] = []
+	var decodeThreadTask : Task<Void,Never>!
+	var getFrameData : (Mp4Sample)->Task<Data,Error>
+	
+	required init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (CoreVideoFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 	{
+		self.getFrameData = getFrameData
 		self.onFrameDecoded = onFrameDecoded
 		self.onDecodeError = onDecodeError
 		self.format = try codecMeta.GetFormat()
@@ -195,26 +204,34 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 			throw PopCodecError("Failed to create decompression session (null session)")
 		}			
 		self.session = session
+		self.decodeThreadTask = Task(name:"DecodeThread",priority: .medium, operation: DecodeThread)
 	}
 	
-	func FilterUnneccesaryDecodes(samples:[Mp4Sample]) -> [Mp4Sample]
+	deinit
+	{
+		self.decodeThreadTask.cancel()
+		//	free session
+	}
+	
+	//	might need this to be private as we dont want caller to decide what to filter... although we do want to reduce fetching from file...
+	private func FilterUnneccesaryDecodes(samples:[Mp4Sample]) -> ArraySlice<Mp4Sample>
 	{
 		//	if the last sample we decoded is in the list, we dont need to do the ones before it
 		guard let lastSubmitedDecodeTime else
 		{
-			return samples
+			return ArraySlice(samples)
 		}
 		let lastDecodedIndex = samples.firstIndex{ $0.decodeTime == lastSubmitedDecodeTime }
 		guard let lastDecodedIndex else
 		{
 			//	not in the list
 			print("Decode all samples")
-			return samples
+			return ArraySlice(samples)
 		}
 		
 		let undecodedSamples = samples[lastDecodedIndex+1..<samples.count]
 		print("Skip samples to \(lastDecodedIndex)... now decoding x\(undecodedSamples.count)")
-		return Array(undecodedSamples)
+		return undecodedSamples
 	}
 	
 	func GetNaluDataLength(frameData:Data) -> Int?
@@ -233,7 +250,48 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 		return lengthInData + lengthSize
 	}
 	
-	func DecodeFrame(meta:Mp4Sample,data:Data) throws
+	private func DecodeThread() async
+	{
+		//	wait for frames to change
+		while !Task.isCancelled
+		{
+			//	filter unncessacry decodes here
+			//	todo: if we do batches, verifiy keyframes
+			guard let nextBatch = decodeQueue.popFirst() else
+			{
+				await Task.sleep(milliseconds: 100)
+				continue
+			}
+			
+			let decodeBatch = FilterUnneccesaryDecodes(samples: nextBatch.frames)
+			
+			do
+			{
+				for frame in decodeBatch
+				{
+					//	we could pre-fetch these
+					let data = try await getFrameData(frame).value
+					try DecodeFrame(meta: frame, data: data)
+				}
+			}
+			catch
+			{
+				print("todo: flush batch \(error.localizedDescription)")
+				//	flush out the rest of the batch?
+				//self.onDecodeError(next.0.presentationTime, error)
+			}
+		}
+	}
+	
+	func DecodeFrames(frames:[Mp4Sample]) throws
+	{
+		let batch = DecodeBatch(frames: frames)
+		decodeQueue.append(batch)
+		//	wake up thread
+	}
+	
+	
+	private func DecodeFrame(meta:Mp4Sample,data:Data) throws
 	{
 		do
 		{
@@ -338,6 +396,7 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 		catch
 		{
 			self.onDecodeError(meta.presentationTime,error)
+			throw error
 		}
 	}
 }

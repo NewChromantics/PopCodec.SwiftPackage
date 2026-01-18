@@ -80,7 +80,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	
 	private func AllocateDecoder(codecMeta:CodecType) async throws -> VideoDecoderType
 	{
-		return try VideoDecoderType(codecMeta: codecMeta, onFrameDecoded: OnFrameDecoded, onDecodeError: OnFrameError)
+		return try VideoDecoderType(codecMeta: codecMeta, getFrameData:getFrameData, onFrameDecoded: OnFrameDecoded, onDecodeError: OnFrameError)
 		//return try VideoToolboxH264Decoder(codecMeta:codecMeta,onFrameDecoded: OnFrameDecoded,onDecodeError: OnFrameError)
 	}
 	
@@ -104,6 +104,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 				return
 			}
 		}
+		print("Got new frame \(frame.presentationTime)")
 		
 		//	need to resolve pending fetches
 		decodedFrames.append( .frame(frame) )
@@ -173,7 +174,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 				//print("decoded frames completion")
 				let selfExists = self.decodedFrames.first{ $0.presentationTime == time } != nil
 				let newValueExists = newValue.first{ $0.presentationTime == time } != nil
-				print("Frame cache has changed (waiting for \(time)) selfExists=\(selfExists) newValueExists=\(newValueExists)")
+				//print("Frame cache has changed (waiting for \(time)) selfExists=\(selfExists) newValueExists=\(newValueExists)")
 				changedPromise(Result.success(Void()))
 			}/*
 			receiveValue:
@@ -223,7 +224,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		async let decoderPromise = allocateDecoderTask.result
 		
 		//	get meta
-		print("Fetching \(time)...")
+		print("Decoding frame \(time)...")
 		let sampleAndDependencies = try await self.getFrameSampleAndDependencies(time).value
 		//print("\(time) -> \(sampleAndDependencies.samplesInDecodeOrder.map{"\($0.presentationTime)"})...")
 		
@@ -233,21 +234,38 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			return try existingFrame.GetFrame()
 		}
 		
+		print("Getting frame \(time) dependencies...")
 		var decodeSamples = sampleAndDependencies.samplesInDecodeOrder
 		let decoder = try await decoderPromise.get()
-		decodeSamples = decoder.FilterUnneccesaryDecodes(samples:decodeSamples)
 		
-		//	decode in order
+		/*
+		 decodeSamples = decoder.FilterUnneccesaryDecodes(samples:decodeSamples)
+		 
+		 //	decode in order
+		 for sample in decodeSamples
+		 {
+		 //	fetch data, decode
+		 let data = try await getFrameData(sample).value
+		 try decoder.DecodeFrame(meta:sample,data:data)
+		 }
+		 */
+		/*
+		//	decode batch
+		var samplesAndData : [(Mp4Sample,Data)] = []
 		for sample in decodeSamples
 		{
 			//	fetch data, decode
+			print("Getting dependency frame \(sample.presentationTime) (of \(time)) data...")
 			let data = try await getFrameData(sample).value
-			try decoder.DecodeFrame(meta:sample,data:data)
-		}
+			samplesAndData.append((sample,data))
+		}*/
+		print("Submitting batch \(time)...")
+		try decoder.DecodeFrames(frames:decodeSamples)
 		
 		//	now wait for the frame to be spat out
 		let resolvedTime = sampleAndDependencies.sample.presentationTime
 		//print("Now WaitForDecodedFrame(\(time))...")
+		print("Waiting for output frame \(time)...")
 		let frame = try await WaitForDecodedFrame(time: resolvedTime)
 		return try frame.GetFrame()
 	}

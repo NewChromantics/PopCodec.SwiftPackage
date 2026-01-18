@@ -51,9 +51,9 @@ public protocol VideoDecoder
 	
 	var onFrameDecoded : (OutputFrameType)->Void			{	get	}
 	var onDecodeError : (Millisecond,Error)->Void	{	get	}
-	init(codecMeta:CodecType,onFrameDecoded: @escaping (OutputFrameType) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
+	init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (OutputFrameType) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 	
 	//	to save re-decoding, filter out the samples we dont need to re-decode from the current state
-	func FilterUnneccesaryDecodes(samples:[InputFrameMeta]) -> [InputFrameMeta]
-	func DecodeFrame(meta:Mp4Sample,data:Data) throws
+	//func FilterUnneccesaryDecodes(samples:[InputFrameMeta]) -> [InputFrameMeta]
+	func DecodeFrames(frames:[Mp4Sample]) throws
 }	
