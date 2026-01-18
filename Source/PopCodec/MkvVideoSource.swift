@@ -13,7 +13,7 @@ extension ByteReader
 		let currentPosition = self.globalPosition
 		let bytesRead = currentPosition - startingPosition
 		let headerSize = bytesRead
-		return EBMLElement(id: id, size: size, dataOffset: Int(startingPosition), headerSize: Int(headerSize) )
+		return EBMLElement(id: id, size: size, dataOffset: Int(startingPosition), headerSize: Int(headerSize), children: [] )
 	}
 	
 	//	very slightly different to readVIntSize()
@@ -153,14 +153,14 @@ struct EbmlAtom : Atom
 	var children : [EbmlAtom]?
 	
 	
-	init(element:EBMLElement,children:[EBMLElement])
+	init(element:EBMLElement)
 	{
 		self.element = element
-		if !children.isEmpty
+		if !element.children.isEmpty
 		{
-			self.children = children.map
+			self.children = element.children.map
 			{
-				return EbmlAtom(element: $0, children: [])
+				return EbmlAtom(element: $0)
 			}
 		}
 	}
@@ -193,8 +193,8 @@ public class MkvVideoSource : VideoSource
 		let doc = try parser.parse()
 		{
 			//	turn elements into atoms
-			element,childElements in
-			let atom = EbmlAtom(element: element,children:childElements)
+			element in
+			let atom = EbmlAtom(element: element)
 			atoms.append(atom)
 		}		
 		
@@ -548,6 +548,9 @@ struct EBMLElement {
 	var totalSize: Int {
 		headerSize + Int(size)
 	}
+	
+	//	for visualisation
+	var children : [EBMLElement]
 }
 
 
@@ -674,7 +677,7 @@ class MKVParser {
 	}
 	
 	// MARK: - Public Parse Method
-	func parse(onElement:(EBMLElement,[EBMLElement])->Void) throws -> MKVDocument {
+	func parse(onElement:(EBMLElement)->Void) throws -> MKVDocument {
 		offset = 0
 		
 		// Parse EBML header
@@ -682,7 +685,7 @@ class MKVParser {
 			  ebmlElement.id == EBMLElementID.ebml.rawValue else {
 			throw MKVError.invalidEBMLHeader
 		}
-		onElement(ebmlElement,[])
+		onElement(ebmlElement)
 		
 		var ebmlVersion: UInt64 = 1
 		var docType = ""
@@ -693,7 +696,7 @@ class MKVParser {
 		while offset < ebmlEnd {
 			guard let elem = try? readElement() else { break }
 			
-			onElement(elem,[])
+			onElement(elem)
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .ebmlVersion:
@@ -708,7 +711,7 @@ class MKVParser {
 		}
 		
 		// Parse Segment
-		guard let segmentElement = try? readElement(),
+		guard var segmentElement = try? readElement(),
 			  segmentElement.id == EBMLElementID.segment.rawValue else {
 			throw MKVError.invalidSegment
 		}
@@ -721,34 +724,32 @@ class MKVParser {
 		
 		let segmentEnd = offset + Int(segmentElement.size)
 		
-		//	stored for data visulation, not parsing
-		var segmentChildElements : [EBMLElement] = []
 		
 		while offset < segmentEnd && offset < data.count {
-			guard let elem = try? readElement() else { break }
+			guard var elem = try? readElement() else { break }
+			
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .info:
-					segmentInfo = try parseSegmentInfo(size: Int(elem.size))
-					segmentChildElements.append(elem)
+					segmentInfo = try parseSegmentInfo(size: Int(elem.size), childElements: &elem.children)
 
 				case .tracks:
-					tracks = try parseTracks(size: Int(elem.size))
-					segmentChildElements.append(elem)
+					tracks = try parseTracks(size: Int(elem.size), childElements: &elem.children)
 
 				case .cluster:
-					//	gr: skipping clusters atm as there's a LOT
-					//segmentChildElements.append(elem)
-					if let cluster = try? parseCluster(size: Int(elem.size), segmentInfo: segmentInfo) {
+					if let cluster = try? parseCluster(size: Int(elem.size), segmentInfo: segmentInfo, childElements:&elem.children) {
 						clusters.append(cluster)
 					}
 
 				default:
 					offset += Int(elem.size)
 			}
+			
+			segmentElement.children.append(elem)
+
 		}
 		
-		onElement(segmentElement,segmentChildElements)
+		onElement(segmentElement)
 	
 		return MKVDocument(
 			ebmlVersion: ebmlVersion,
@@ -776,7 +777,8 @@ class MKVParser {
 			id: id,
 			size: size,
 			dataOffset: offset,
-			headerSize: headerSize
+			headerSize: headerSize,
+			children: []
 		)
 	}
 	
@@ -906,7 +908,8 @@ class MKVParser {
 	}
 	
 	// MARK: - Segment Info Parsing
-	private func parseSegmentInfo(size: Int) throws -> SegmentInfo {
+	private func parseSegmentInfo(size: Int,childElements:inout [EBMLElement]) throws -> SegmentInfo 
+	{
 		let endOffset = offset + size
 		
 		var timestampScale: UInt64 = 1_000_000
@@ -917,6 +920,7 @@ class MKVParser {
 		
 		while offset < endOffset {
 			guard let elem = try? readElement() else { break }
+			childElements.append(elem)
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .timestampScale:
@@ -944,13 +948,13 @@ class MKVParser {
 	}
 	
 	// MARK: - Tracks Parsing
-	private func parseTracks(size: Int) throws -> [MkvTrackMeta] {
+	private func parseTracks(size: Int,childElements:inout [EBMLElement]) throws -> [MkvTrackMeta] {
 		let endOffset = offset + size
 		var tracks: [MkvTrackMeta] = []
 		
 		while offset < endOffset {
 			guard let elem = try? readElement() else { break }
-			
+			childElements.append(elem)
 			if EBMLElementID(rawValue: elem.id) == .trackEntry {
 				if let track = try? parseTrackEntry(size: Int(elem.size)) {
 					tracks.append(track)
@@ -1109,7 +1113,8 @@ class MKVParser {
 	}
 	
 	// MARK: - Cluster Parsing
-	private func parseCluster(size: Int, segmentInfo: SegmentInfo?) throws -> MkvCluster {
+	private func parseCluster(size: Int, segmentInfo: SegmentInfo?,childElements:inout [EBMLElement]) throws -> MkvCluster 
+	{
 		let endOffset = offset + size
 		let timestampScale = segmentInfo?.timestampScale ?? 1_000_000
 		
