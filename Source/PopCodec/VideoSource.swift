@@ -42,12 +42,12 @@ public func DetectVideoSourceType(headerData:Data) async -> [VideoSource.Type]
 
 
 
-enum BinaryChopCompare
+public enum BinaryChopCompare
 {
 	case Equals,LessThan,GreaterThan
 }
 
-extension Array
+public extension Array
 {
 	func FindNearestIndexWithBinaryChop(compare:(Element)->BinaryChopCompare) -> Int?
 	{
@@ -115,7 +115,7 @@ public enum TrackEncoding : CustomStringConvertible
 	
 	public var description: String	{	label	}
 
-	var isVideo : Bool
+	public var isVideo : Bool
 	{
 		switch self
 		{
@@ -124,7 +124,7 @@ public enum TrackEncoding : CustomStringConvertible
 		}
 	}
 	
-	var label : String
+	public var label : String
 	{
 		switch self
 		{
@@ -135,7 +135,7 @@ public enum TrackEncoding : CustomStringConvertible
 		}
 	}
 	
-	var icon : String
+	public var icon : String
 	{
 		switch self
 		{
@@ -163,6 +163,8 @@ func clampRange(from:Int,to:Int,min:Int,max:Int) -> ClosedRange<Int>
 public struct TrackMeta : Identifiable
 {
 	public var id : TrackUid
+	
+	//	gr: if start & end dont exist, we should look at first/last samples'
 	public var startTime : Millisecond?
 	public var duration : Millisecond
 	public var endTime : Millisecond?	{	duration + (self.startTime ?? 0) }
@@ -177,10 +179,7 @@ public struct TrackMeta : Identifiable
 	public var keyframeSamples : [Mp4Sample]	{	samples.filter{ $0.isKeyframe }	}
 	
 	public var icon : String		{	encoding.icon	}
-	public var label : String
-	{
-		return "\(id) \(encoding.label)"
-	}
+	public var label : String		{	return "\(id) \(encoding.label)"	}
 	
 	public func GetFrameTimeLessOrEqualToTime(_ time:Millisecond,keyframe:Bool) -> Millisecond?
 	{

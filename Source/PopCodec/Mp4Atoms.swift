@@ -767,7 +767,7 @@ struct Atom_text : Atom, SpecialisedAtom
 
 
 
-public struct Mp4Sample
+public struct Mp4Sample : Hashable
 {
 	public var mdatOffset : UInt64	//	file position but inside it's mdat
 	public var size : UInt32
