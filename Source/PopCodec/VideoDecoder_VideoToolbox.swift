@@ -161,6 +161,7 @@ extension Data
 struct DecodeBatch
 {
 	var frames : [Mp4Sample]
+	var frameStillRequired : ()async->Bool	//	async for isolation, but maybe there's another need
 }
 
 class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
@@ -263,6 +264,13 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 				continue
 			}
 			
+			let isStillRequired = await nextBatch.frameStillRequired()
+			if !isStillRequired
+			{
+				print("Batch no longer required - skipping")
+				continue
+			}
+			
 			let decodeBatch = FilterUnneccesaryDecodes(samples: nextBatch.frames)
 			
 			do
@@ -283,9 +291,9 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 		}
 	}
 	
-	func DecodeFrames(frames:[Mp4Sample]) throws
+	func DecodeFrames(frames:[Mp4Sample],frameStillRequired:@escaping()async->Bool) throws
 	{
-		let batch = DecodeBatch(frames: frames)
+		let batch = DecodeBatch(frames: frames, frameStillRequired: frameStillRequired)
 		decodeQueue.append(batch)
 		//	wake up thread
 	}

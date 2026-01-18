@@ -28,7 +28,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	var getFrameData : (Mp4Sample) -> Task<Data,Error>
 	//var getFrameSample : (Millisecond) async throws -> Mp4Sample
 	//var getFrameData : (Mp4Sample) async throws -> Data
-	var maxRetainedFrames = 60
+	var maxRetainedFrames = 200	//	seems like the ideal here is the count between keyframes, but we can't guess that. Need to balance with mem/resource usage
 
 	init(codecMeta:CodecType,getFrameSampleAndDependencies:@escaping (Millisecond)async throws->Mp4SampleAndDependencies,getFrameData:@escaping (Mp4Sample)async throws->Data)
 	{
@@ -238,29 +238,14 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		var decodeSamples = sampleAndDependencies.samplesInDecodeOrder
 		let decoder = try await decoderPromise.get()
 		
-		/*
-		 decodeSamples = decoder.FilterUnneccesaryDecodes(samples:decodeSamples)
-		 
-		 //	decode in order
-		 for sample in decodeSamples
-		 {
-		 //	fetch data, decode
-		 let data = try await getFrameData(sample).value
-		 try decoder.DecodeFrame(meta:sample,data:data)
-		 }
-		 */
-		/*
-		//	decode batch
-		var samplesAndData : [(Mp4Sample,Data)] = []
-		for sample in decodeSamples
-		{
-			//	fetch data, decode
-			print("Getting dependency frame \(sample.presentationTime) (of \(time)) data...")
-			let data = try await getFrameData(sample).value
-			samplesAndData.append((sample,data))
-		}*/
 		print("Submitting batch \(time)...")
 		try decoder.DecodeFrames(frames:decodeSamples)
+		{
+			//	do we still need to decode this?
+			let targetFrameExists = await self.decodedFrameNumbersCache.contains(sampleAndDependencies.sample.presentationTime)
+			//	todo: check for error to retry 
+			return !targetFrameExists
+		}		
 		
 		//	now wait for the frame to be spat out
 		let resolvedTime = sampleAndDependencies.sample.presentationTime
