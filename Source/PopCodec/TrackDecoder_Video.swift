@@ -106,8 +106,14 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		}
 		print("Got new frame \(frame.presentationTime)")
 		
+		//	need to pre-copy the struct to allow us to mutate
+		var frameCopyForMutating = frame
+		
+		//	pre-fetch cgimage
+		frameCopyForMutating.PreRenderWarmup()
+		
 		//	need to resolve pending fetches
-		decodedFrames.append( .frame(frame) )
+		decodedFrames.append( .frame(frameCopyForMutating) )
 		
 		//	cull 
 		CullOldDecodedFrames()

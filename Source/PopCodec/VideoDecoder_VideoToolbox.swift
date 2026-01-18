@@ -60,6 +60,7 @@ extension OSStatus
 public struct CoreVideoFrame : VideoFrame
 {
 	public let frameBuffer : CVPixelBuffer
+	public var frameCgImage : CGImage?		//	try to only load once, or maybe pre-warm
 	public let decodeTime : Millisecond
 	public let presentationTime : Millisecond
 	public let duration : Millisecond
@@ -72,6 +73,13 @@ public struct CoreVideoFrame : VideoFrame
 		self.duration = duration
 	}
 	
+	public mutating func PreRenderWarmup() 
+	{
+		//	load cg frame once, and it'll load faster later?
+		frameCgImage = try? frameBuffer.cgImage
+	}
+	
+
 }
 
 

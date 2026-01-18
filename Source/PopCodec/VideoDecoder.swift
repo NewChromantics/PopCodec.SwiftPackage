@@ -5,6 +5,7 @@ import Foundation
 public protocol VideoFrame
 {
 	var presentationTime : Millisecond	{get}
+	mutating func PreRenderWarmup()			//	called after decoding, and we're assuming, before rendering
 }
 
 enum VideoFrameOrError<VideoFrameType:VideoFrame>
