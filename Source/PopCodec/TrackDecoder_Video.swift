@@ -11,7 +11,6 @@ import UniformTypeIdentifiers
 
 
 
-
 //	temporarily public for some direct access
 public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, TrackDecoder, ObservableObject
 {
@@ -22,7 +21,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	
 	var allocateDecoderTask : Task<VideoDecoder,Error>!
 	@Published var decodedFrames : [FrameOrError] = []
-	private var decodedFrameNumbersCache = Set<Millisecond>()	//	fast access to decodedFrames data
+	@MainActor private var decodedFrameNumbersCache = Set<Millisecond>()	//	fast access to decodedFrames data
 
 	//	async closures seem to be a problem, return a promise essentally
 	var getFrameSampleAndDependencies : (Millisecond) -> Task<Mp4SampleAndDependencies,Error>
@@ -54,8 +53,13 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		let decodedFrameNumbersCacheObserver = _decodedFrames.projectedValue.sink
 		{
 			newValue in
-			//print("Writing new decoded frame number cache x\(newValue.count)")
-			self.decodedFrameNumbersCache = Set( newValue.map{ $0.presentationTime } )
+			Task
+			{
+				@MainActor in
+				//	gr: decodedFrameNumbersCache needs a lock, writing and reading from different threads
+				//print("Writing new decoded frame number cache x\(newValue.count)")
+				self.decodedFrameNumbersCache = Set( newValue.map{ $0.presentationTime } )
+			}
 		}
 		subscriberCancellables.append(decodedFrameNumbersCacheObserver)
 	}
@@ -149,6 +153,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			
 			if let frame = GetDecodedFrame(time: time)
 			{
+				print("Frame found \(time)")
 				return frame
 			}
 			
@@ -162,18 +167,21 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			
 			//func resolve()	{	exportPromise(Result.success(123))	}
 			//func reject(_ error:Error)	{	exportPromise(Result.failure(error))	}
-			
 			listener = _decodedFrames.projectedValue.sink
 			{
-				_ in 
-				print("decoded frames completion")
-			}
+				newValue in 
+				//print("decoded frames completion")
+				let selfExists = self.decodedFrames.first{ $0.presentationTime == time } != nil
+				let newValueExists = newValue.first{ $0.presentationTime == time } != nil
+				print("Frame cache has changed (waiting for \(time)) selfExists=\(selfExists) newValueExists=\(newValueExists)")
+				changedPromise(Result.success(Void()))
+			}/*
 			receiveValue:
 			{
 				newList in
 				print("Frame cache has changed (waiting for \(time))")
 				changedPromise(Result.success(Void()))
-			}
+			}*/
 
 			//	loop around and check again
 			try await changedFuture.value
@@ -181,9 +189,10 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		
 	}
 	
-	public func HasCachedFrame(time: Millisecond) -> Bool 
+	@MainActor public func HasCachedFrame(time: Millisecond) -> Bool 
 	{
 		//	use cached
+		//	crash here when reading and being set in another thread - need a safe sync read
 		return decodedFrameNumbersCache.contains(time)
 		let match = decodedFrames.first{ $0.presentationTime == time }
 		return match != nil

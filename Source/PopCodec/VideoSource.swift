@@ -145,6 +145,18 @@ public enum TrackEncoding : CustomStringConvertible
 			case .Unknown:	return "questionmark.square.dashed"
 		}
 	}
+	
+	//	for various styling
+	public var colour : NSColor
+	{
+		switch self
+		{
+			case .Video(_):	return .blue
+			case .Audio:	return .green
+			case .Text:		return .yellow
+			case .Unknown:	return .red
+		}
+	}
 }
 
 func clamp(_ x:Int, min: Int, max: Int) -> Int
@@ -180,6 +192,7 @@ public struct TrackMeta : Identifiable
 	
 	public var icon : String		{	encoding.icon	}
 	public var label : String		{	return "\(id) \(encoding.label)"	}
+	public var colour : NSColor		{	encoding.colour	}
 	
 	public func GetFrameTimeLessOrEqualToTime(_ time:Millisecond,keyframe:Bool) -> Millisecond?
 	{
