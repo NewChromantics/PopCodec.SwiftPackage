@@ -7,6 +7,7 @@
 
 import VideoToolbox
 import CoreMedia
+import PopCommon
 
 
 
@@ -77,6 +78,7 @@ public struct CoreVideoFrame : VideoFrame
 public class VideoAsyncDecodedFrame<FrameType:VideoFrame> : AsyncDecodedFrame
 {
 	@Published public var frame : FrameType? = nil
+	@Published private var framePromise = SendablePromise<FrameType>()
 	
 	public init(presentationTime:Millisecond)
 	{
@@ -87,8 +89,21 @@ public class VideoAsyncDecodedFrame<FrameType:VideoFrame> : AsyncDecodedFrame
 	{
 		print("OnFrame \(frame.presentationTime)")
 		self.frame = frame
+		framePromise.Resolve(frame)
 		print("Finished setting .frame \(frame.presentationTime)")
 	}
+	
+	@MainActor public override func OnError(_ error:Error)
+	{
+		super.OnError(error)
+		framePromise.Reject(error)
+	}
+
+	public func WaitForFrame() async throws -> FrameType
+	{
+		return try await framePromise.value
+	}
+	
 }
 
 
