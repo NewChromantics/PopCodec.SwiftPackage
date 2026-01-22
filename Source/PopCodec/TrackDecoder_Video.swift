@@ -208,20 +208,40 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	
 	public func LoadFrame(time: Millisecond) -> AsyncDecodedFrame 
 	{
-		let frameRenderable = VideoAsyncDecodedFrame<FrameType>(presentationTime:time)
+		if let cached = GetDecodedFrame(time: time)
+		{
+			if let cachedFrame = try? cached.GetFrame()
+			{
+				let asyncFrame = VideoAsyncDecodedFrame<FrameType>(presentationTime:time,frame: cachedFrame)
+				print("LoadFrame(\(time)) returning cached frame; ready=\(asyncFrame.isReady)")
+				/*
+
+				Task
+				{
+					@MainActor in
+					asyncFrame.OnFrame(frame)
+				}
+				//print("LoadFrame(\(time)) returning cached frame ready=\(asyncFrame.isReady)")
+				print("LoadFrame(\(time)) returning cached frame")
+				 */
+				return asyncFrame
+			}
+		}
+		
+		let asyncFrame = VideoAsyncDecodedFrame<FrameType>(presentationTime:time)
 		Task
 		{
 			do
 			{
 				let frame = try await DecodeFrame(time: time)
-				await frameRenderable.OnFrame(frame)
+				await asyncFrame.OnFrame(frame)
 			}
 			catch
 			{
-				await frameRenderable.OnError(error)
+				await asyncFrame.OnError(error)
 			}
 		}
-		return frameRenderable
+		return asyncFrame
 	}
 	
 	//	if the time hasn't been resolved, the closest frame will be returned

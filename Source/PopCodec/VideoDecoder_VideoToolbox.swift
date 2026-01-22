@@ -57,15 +57,16 @@ extension OSStatus
 }
 
 
+
 public struct CoreVideoFrame : VideoFrame
 {
 	public let frameBuffer : CVPixelBuffer
-	public var frameCgImage : CGImage?		//	try to only load once, or maybe pre-warm
+	public var cgImage: CGImage?		//	try to only load once, or maybe pre-warm
 	public let decodeTime : Millisecond
 	public let presentationTime : Millisecond
 	public let duration : Millisecond
 	
-	init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond, duration:Millisecond) 
+	public init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond, duration:Millisecond) 
 	{
 		self.frameBuffer = frameBuffer
 		self.decodeTime = decodeTime
@@ -76,10 +77,30 @@ public struct CoreVideoFrame : VideoFrame
 	public mutating func PreRenderWarmup() 
 	{
 		//	load cg frame once, and it'll load faster later?
-		frameCgImage = try? frameBuffer.cgImage
+		cgImage = try? frameBuffer.cgImage
+	}
+}
+
+//	core video input, but discards immediately and only stores a cgimage
+public struct CGVideoFrame : VideoFrame
+{
+	public var cgImage: CGImage?
+	public let decodeTime : Millisecond
+	public let presentationTime : Millisecond
+	public let duration : Millisecond
+	
+	public init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond, duration:Millisecond)
+	{
+		//	todo: capture this error - video frames dont currently have an error
+		self.cgImage = try? frameBuffer.cgImage
+		self.decodeTime = decodeTime
+		self.presentationTime = presentationTime
+		self.duration = duration
 	}
 	
-
+	public mutating func PreRenderWarmup() 
+	{
+	}
 }
 
 
@@ -91,6 +112,13 @@ public class VideoAsyncDecodedFrame<FrameType:VideoFrame> : AsyncDecodedFrame
 	public init(presentationTime:Millisecond)
 	{
 		super.init(frameTime: presentationTime)
+	}
+	
+	//	init for when we already have the frame loaded
+	public init(presentationTime:Millisecond,frame:FrameType)
+	{
+		self.frame = frame
+		super.init(frameTime: presentationTime,initiallyReady: true)
 	}
 	
 	@MainActor func OnFrame(_ frame:FrameType)
@@ -172,10 +200,10 @@ struct DecodeBatch
 	var frameStillRequired : ()async->Bool	//	async for isolation, but maybe there's another need
 }
 
-class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
+class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDecoder
 {
 	var session : VTDecompressionSession
-	var onFrameDecoded : (CoreVideoFrame)->Void
+	var onFrameDecoded : (OutputVideoFrame)->Void
 	var onDecodeError : (Millisecond,Error)->Void
 	var format : CMVideoFormatDescription
 	
@@ -187,7 +215,7 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 	var decodeThreadTask : Task<Void,Never>!
 	var getFrameData : (Mp4Sample)->Task<Data,Error>
 	
-	required init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (CoreVideoFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
+	required init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (OutputVideoFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 	{
 		self.getFrameData = getFrameData
 		self.onFrameDecoded = onFrameDecoded
@@ -403,7 +431,7 @@ class VideoToolboxDecoder<CodecType:Codec> : VideoDecoder
 					self.onDecodeError(outputPresetentationMs,PopCodecError("Failed to decode frame status=\(status)"))
 					return
 				}
-				let frame = CoreVideoFrame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
+				let frame = OutputVideoFrame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
 				self.onFrameDecoded(frame)
 			}
 			print("Updating lastSubmitedDecodeTime to \(meta.decodeTime)")

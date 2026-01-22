@@ -263,12 +263,12 @@ public class Mp4VideoSource : VideoSource
 			}
 			if let h264Codec = codec as? H264Codec
 			{
-				let decoder = VideoTrackDecoder<VideoToolboxDecoder<H264Codec>>(codecMeta: h264Codec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
+				let decoder = VideoTrackDecoder<VideoToolboxDecoder<H264Codec,CGVideoFrame>>(codecMeta: h264Codec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
 				return decoder
 			}
 			if let hevcCodec = codec as? HevcCodec
 			{
-				let decoder = VideoTrackDecoder<VideoToolboxDecoder<HevcCodec>>(codecMeta: hevcCodec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
+				let decoder = VideoTrackDecoder<VideoToolboxDecoder<HevcCodec,CGVideoFrame>>(codecMeta: hevcCodec,getFrameSampleAndDependencies: GetFrameSampleAndDependencies,getFrameData: self.GetFrameData)
 				return decoder
 			}
 		}

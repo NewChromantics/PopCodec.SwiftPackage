@@ -10,15 +10,18 @@ protocol FrameFactory
 
 
 
+//	these are passed around & cached, so theyre objects instad of a protocol
 open class AsyncDecodedFrame : ObservableObject
 {
 	//	presentation time, which should always exist and not change
 	//	we're assuming this is resolved...
 	let frameTime : Millisecond
 	@Published public var error : Error? = nil
+	@Published public var isReady : Bool = false
 	
-	public init(frameTime:Millisecond) 
+	public init(frameTime:Millisecond,initiallyReady:Bool=false)
 	{
+		self.isReady = initiallyReady
 		self.frameTime = frameTime
 	}
 	

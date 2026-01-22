@@ -1,11 +1,17 @@
 import Foundation
-
-
+import CoreGraphics
+import VideoToolbox
 
 public protocol VideoFrame
 {
 	var presentationTime : Millisecond	{get}
+	var cgImage : CGImage?				{get}
 	mutating func PreRenderWarmup()			//	called after decoding, and we're assuming, before rendering
+
+	//	currently corevideo-only init (with CVPixelBuffer)
+	//	but in future may need a CoreVideoVideoFrame with a more nuanced init
+	init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond, duration: Millisecond)
+
 }
 
 enum VideoFrameOrError<VideoFrameType:VideoFrame>
