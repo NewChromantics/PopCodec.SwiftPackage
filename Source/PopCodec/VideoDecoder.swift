@@ -5,7 +5,7 @@ import VideoToolbox
 public protocol VideoFrame
 {
 	var presentationTime : Millisecond	{get}
-	var cgImage : CGImage?				{get}
+	var cgImage : CGImage				{get throws}
 	mutating func PreRenderWarmup()			//	called after decoding, and we're assuming, before rendering
 
 	//	currently corevideo-only init (with CVPixelBuffer)

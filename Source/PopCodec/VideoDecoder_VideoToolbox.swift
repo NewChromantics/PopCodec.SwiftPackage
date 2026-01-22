@@ -60,8 +60,8 @@ extension OSStatus
 
 public struct CoreVideoFrame : VideoFrame
 {
+	public var cgImage: CGImage		{	get throws {try frameBuffer.cgImage}	}
 	public let frameBuffer : CVPixelBuffer
-	public var cgImage: CGImage?		//	try to only load once, or maybe pre-warm
 	public let decodeTime : Millisecond
 	public let presentationTime : Millisecond
 	public let duration : Millisecond
@@ -77,22 +77,41 @@ public struct CoreVideoFrame : VideoFrame
 	public mutating func PreRenderWarmup() 
 	{
 		//	load cg frame once, and it'll load faster later?
-		cgImage = try? frameBuffer.cgImage
+		//cgImage = try? frameBuffer.cgImage
 	}
 }
 
 //	core video input, but discards immediately and only stores a cgimage
 public struct CGVideoFrame : VideoFrame
 {
-	public var cgImage: CGImage?
+	public var cgImage: CGImage
+	{
+		get throws
+		{
+			if let cgImageLoadError
+			{
+				throw cgImageLoadError
+			}
+			return cgImageLoaded!
+		}
+	}
+	var cgImageLoaded : CGImage?
+	var cgImageLoadError : Error?
+		
 	public let decodeTime : Millisecond
 	public let presentationTime : Millisecond
 	public let duration : Millisecond
 	
 	public init(frameBuffer: CVPixelBuffer, decodeTime: Millisecond, presentationTime: Millisecond, duration:Millisecond)
 	{
-		//	todo: capture this error - video frames dont currently have an error
-		self.cgImage = try? frameBuffer.cgImage
+		do
+		{
+			self.cgImageLoaded = try frameBuffer.cgImage
+		}
+		catch
+		{
+			self.cgImageLoadError = error
+		}
 		self.decodeTime = decodeTime
 		self.presentationTime = presentationTime
 		self.duration = duration
