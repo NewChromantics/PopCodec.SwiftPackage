@@ -1151,7 +1151,10 @@ class MKVParser {
 						clusterTimestamp: clusterTimestamp,
 						timestampScale: timestampScale
 					)
-					print("Block Sample duration \(sample.duration ?? 0)")
+					if sample.duration == nil
+					{
+						print("Block sample missing duration")
+					}
 					samples.append(sample)
 					
 				default:
