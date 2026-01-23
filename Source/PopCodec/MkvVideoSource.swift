@@ -142,7 +142,7 @@ struct MkvHeader
 
 struct EbmlAtom : Atom
 {
-	var fourcc: Fourcc			{	element.type?.fourcc ?? Fourcc("????")	}
+	var fourcc: Fourcc			{	element.fourcc	}
 	var filePosition: UInt64	{	UInt64(element.filePosition)	}	//	gr: I think this value is written too late and may be incorrect
 	var headerSize: UInt64		{	UInt64(element.headerSize)	}
 	var contentSize: UInt64		{	element.size	}
@@ -457,6 +457,9 @@ extension EBMLElementID
 			case .audio:			return Fourcc("Audo")
 				
 			case .cluster:			return Fourcc("Clst")
+			case .timestamp:		return Fourcc("Time")
+			case .simpleBlock:		return Fourcc("blkS")
+			case .blockGroup:		return Fourcc("blkG")
 			case .referenceBlock:	return Fourcc("blkR")
 			case .blockDuration:	return Fourcc("blkD")
 			case .duration:			return Fourcc("Dura")
@@ -540,6 +543,7 @@ enum EBMLElementID: UInt32 {
 struct EBMLElement {
 	let id : UInt32
 	var type : EBMLElementID?	{	EBMLElementID(rawValue: id)	}
+	var fourcc : Fourcc			{	type?.fourcc ?? Fourcc(id)	}
 	let size: UInt64
 	var filePosition : UInt64	{	UInt64(dataOffset - headerSize)	}
 	let dataOffset: Int			//	gr; I think parser is storing this in the wrong place (after header)
