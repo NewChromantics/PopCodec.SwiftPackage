@@ -77,10 +77,14 @@ public struct Fourcc : CustomStringConvertible, Equatable
 	var u32 : UInt32
 	public var description : String
 	{
-		return u32.bytes.reduce(into: "")
+		let isAllAscii = u32.bytes.allSatisfy{ $0.char.isASCII }
+		if isAllAscii
 		{
-			out,byte in
-			out.append( byte.niceChar )
+			return u32.bytes.map{ "\($0.char)" }.joined()
+		}
+		else
+		{
+			return "0x" + u32.bytes.map{ "\($0.hex)" }.joined()
 		}
 	}
 	
