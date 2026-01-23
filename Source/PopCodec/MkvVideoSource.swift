@@ -1,4 +1,5 @@
 import Foundation
+import PopCommon
 
 
 extension ByteReader
@@ -173,19 +174,39 @@ public class MkvVideoSource : VideoSource
 	public var defaultSelectedTrack: TrackUid? = nil
 	
 	var url : URL
-	var readHeaderTask : Task<MkvHeader,Error>!	//	promise
+	
+	//	we parse the whole file as its a chunked format 
+	var parseFileTask : Task<Void,Error>!
+	var headerPromise = SendablePromise<MkvHeader>()
 	
 	required public init(url:URL)
 	{
 		self.url = url
 		
-		readHeaderTask = Task(operation: ReadHeader)
+		parseFileTask = Task(operation: ParseFile)
 	}
 	
-	func ReadHeader() async throws -> MkvHeader
+	func ParseFile() async throws
 	{
-		var fileData = try Data(contentsOf:url, options: .alwaysMapped)
+		var fileData = try Data(contentsOf:url, options: .uncached)
 		var fileReader = DataReader(data: fileData)
+
+		let magicHeader = try await fileReader.ReadEmblMagicElement()
+		
+		do
+		{
+			let header = try await ReadHeader(fileReader: fileReader)
+			headerPromise.Resolve(header)
+		}
+		catch
+		{
+			headerPromise.Reject(error)
+		}
+	}
+	
+	func ReadHeader(fileReader:DataReader) async throws -> MkvHeader
+	{
+		var fileData = try Data(contentsOf:url, options: .uncached)
 		let parser = MKVParser(data: fileData)
 		
 		var atoms : [any Atom] = [] 
@@ -252,13 +273,13 @@ public class MkvVideoSource : VideoSource
 	
 	public func GetTrackMetas() async throws -> [TrackMeta] 
 	{
-		let header = try await readHeaderTask.value
+		let header = try await headerPromise.value
 		return header.tracks
 	}
 	
 	public func GetAtoms() async throws -> [any Atom] 
 	{
-		let header = try await readHeaderTask.value
+		let header = try await headerPromise.value
 		return header.atoms
 	}
 	
@@ -394,18 +415,9 @@ public class MkvVideoSource : VideoSource
 	public static func DetectIsFormat(headerData: Data) async -> Bool 
 	{
 		var reader = DataReader(data: headerData)
-		
 		do
 		{
-			//	read first element and check it has the correct id
-			let firstElement = try await reader.ReadEbmlElement()
-			if firstElement.type != EBMLElementID.ebml
-			{
-				throw PopCodecError("First Ebml id is incorrect")
-			}
-			
-			//let mkv = MKVParser(data: headerData)
-			//let doc = try mkv.parse()
+			try await reader.ReadEmblMagicElement()
 			return true
 		}
 		catch
@@ -677,7 +689,8 @@ class MKVParser {
 	}
 	
 	// MARK: - Public Parse Method
-	func parse(onElement:(EBMLElement)->Void) throws -> MKVDocument {
+	func parse(onElement:(EBMLElement)->Void) throws -> MKVDocument 
+	{
 		offset = 0
 		
 		// Parse EBML header
@@ -1308,135 +1321,16 @@ enum MKVError: Error {
 	case missingBlockData
 }
 
-// MARK: - Usage Example
-/*
- // Load MKV file
- let url = URL(fileURLWithPath: "video.mkv")
- let data = try Data(contentsOf: url)
- 
- // Parse
- let parser = MKVParser(data: data)
- let document = try parser.parse()
- 
- // Access information
- print("Document Type: \(document.docType)")
- print("EBML Version: \(document.ebmlVersion)")
- 
- if let info = document.segmentInfo {
- print("Duration: \(info.duration ?? 0) seconds")
- print("Muxing App: \(info.muxingApp ?? "Unknown")")
- }
- 
- for track in document.tracks {
- print("\nTrack #\(track.number)")
- print("Codec: \(track.codecID)")
- 
- switch track.metadata {
- case .video(let videoMeta):
- print("Type: Video")
- print("Resolution: \(videoMeta.pixelWidth)x\(videoMeta.pixelHeight)")
- if let displayWidth = videoMeta.displayWidth, let displayHeight = videoMeta.displayHeight {
- print("Display: \(displayWidth)x\(displayHeight)")
- }
- 
- // Access codec private data (e.g., H.264 SPS/PPS)
- if let codecPrivate = videoMeta.codecPrivate {
- print("Codec Private Data: \(codecPrivate.count) bytes")
- 
- // For H.264 (V_MPEG4/ISO/AVC), this contains the avcC atom
- // which includes SPS, PPS, and other decoder configuration
- if track.codecID == "V_MPEG4/ISO/AVC" {
- print("H.264 configuration data available")
- // Parse avcC structure here if needed
- }
- }
- 
- case .audio(let audioMeta):
- print("Type: Audio")
- print("Sample Rate: \(audioMeta.samplingFrequency) Hz")
- print("Channels: \(audioMeta.channels)")
- if let bitDepth = audioMeta.bitDepth {
- print("Bit Depth: \(bitDepth)")
- }
- 
- // Access codec private data (e.g., AAC AudioSpecificConfig)
- if let codecPrivate = audioMeta.codecPrivate {
- print("Codec Private Data: \(codecPrivate.count) bytes")
- 
- // For AAC (A_AAC), this contains the AudioSpecificConfig
- if track.codecID == "A_AAC" {
- print("AAC configuration data available")
- // Parse AudioSpecificConfig here if needed
- }
- }
- 
- case .text:
- print("Type: Subtitle/Text")
- case .other:
- print("Type: Other/Unknown")
- }
- }
- 
- // Read samples from clusters
- print("\nTotal clusters: \(document.clusters.count)")
- 
- for (index, cluster) in document.clusters.enumerated() {
- print("\nCluster \(index)")
- print("Cluster timestamp: \(cluster.timestamp)")
- print("Samples in cluster: \(cluster.samples.count)")
- 
- // Samples in presentation order
- for sample in cluster.samples {
- print("  Track: \(sample.trackNumber), " +
- "PTS: \(sample.timestamp) ms, " +
- "DTS: \(sample.decodeTimestamp) ms, " +
- "Keyframe: \(sample.isKeyframe), " +
- "Offset: \(sample.fileOffset), " +
- "Size: \(sample.size) bytes")
- }
- 
- // Samples in decode order
- print("\nDecode order:")
- for sample in cluster.samplesByDecodeOrder() {
- print("  DTS: \(sample.decodeTimestamp) ms, " +
- "PTS: \(sample.timestamp) ms, " +
- "Offset: \(sample.fileOffset)")
- }
- }
- 
- // Extract samples for a specific track (e.g., track #1)
- // In presentation order
- let trackSamplesPTS = document.clusters
- .flatMap { $0.samples }
- .filter { $0.trackNumber == 1 }
- .sorted { $0.timestamp < $1.timestamp }
- 
- print("\nTrack 1 has \(trackSamplesPTS.count) samples (presentation order)")
- 
- // In decode order (correct order for feeding to decoder)
- let trackSamplesDecode = document.samplesByDecodeOrder(forTrack: 1)
- print("Track 1 has \(trackSamplesDecode.count) samples (decode order)")
- 
- // Get first keyframe
- if let firstKeyframe = trackSamplesDecode.first(where: { $0.isKeyframe }) {
- print("First keyframe PTS: \(firstKeyframe.timestamp) ms")
- print("First keyframe DTS: \(firstKeyframe.decodeTimestamp) ms")
- print("File offset: \(firstKeyframe.fileOffset)")
- print("Keyframe size: \(firstKeyframe.size) bytes")
- 
- // Read the actual frame data when needed
- if let frameData = firstKeyframe.readData(from: data) {
- print("Successfully read \(frameData.count) bytes")
- }
- }
- 
- // Example: Feed samples to decoder in correct order
- for sample in trackSamplesDecode {
- // Read sample data only when needed
- if let sampleData = sample.readData(from: data) {
- // Decode sampleData at DTS: sample.decodeTimestamp (ms)
- // Display/present frame at PTS: sample.timestamp (ms)
- // Note: For codecs with B-frames, DTS != PTS
- }
- }
- */
+
+extension DataReader
+{
+	func ReadEmblMagicElement() async throws
+	{
+		//	read first element and check it has the correct id
+		let firstElement = try await ReadEbmlElement()
+		if firstElement.type != EBMLElementID.ebml
+		{
+			throw PopCodecError("First Ebml id is incorrect")
+		}
+	}
+}
