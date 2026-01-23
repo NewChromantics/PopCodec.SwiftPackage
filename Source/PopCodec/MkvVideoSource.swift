@@ -606,7 +606,8 @@ struct MkvTrackMeta {
 	let codecID: String
 	let name: String?
 	let language: String?
-	let defaultDuration: UInt64?
+	let defaultDurationNano: UInt64?
+	var defaultDuration: Millisecond?	{	defaultDurationNano.map{ $0 / 1_000_000 }	}
 	let metadata: MkvTrackMetadata
 }
 
@@ -627,7 +628,7 @@ struct MkvSample {
 	let isKeyframe: Bool
 	let fileOffset: Int   // Offset in the file where sample data starts
 	let size: Int         // Size of sample data in bytes
-	let duration: UInt64? // In track time scale units
+	var duration: UInt64? // In track time scale units
 	
 	/// Read the sample data from the original Data object
 	func readData(from data: Data) -> Data? {
@@ -729,7 +730,8 @@ class MKVParser {
 		let segmentEnd = offset + Int(segmentElement.size)
 		
 		
-		while offset < segmentEnd && offset < data.count {
+		while offset < segmentEnd && offset < data.count 
+		{
 			guard var elem = try? readElement() else { break }
 			
 			
@@ -741,9 +743,10 @@ class MKVParser {
 					tracks = try parseTracks(size: Int(elem.size), childElements: &elem.children)
 
 				case .cluster:
-					if let cluster = try? parseCluster(size: Int(elem.size), segmentInfo: segmentInfo, childElements:&elem.children) {
-						clusters.append(cluster)
-					}
+					//	speed up track lookup
+					let trackMap = Dictionary(uniqueKeysWithValues: tracks.map{ ($0.number, $0) } )
+					let cluster = try parseCluster(size: Int(elem.size), segmentInfo: segmentInfo, tracks:trackMap,childElements:&elem.children) 
+					clusters.append(cluster)
 
 				default:
 					offset += Int(elem.size)
@@ -980,7 +983,7 @@ class MKVParser {
 		var codecID = ""
 		var name: String?
 		var language: String?
-		var defaultDuration: UInt64?
+		var defaultDurationNano: UInt64?
 		var codecPrivate: Data?
 		var pixelWidth: UInt64?
 		var pixelHeight: UInt64?
@@ -1010,7 +1013,7 @@ class MKVParser {
 				case .language:
 					language = try readString(size: Int(elem.size))
 				case .defaultDuration:
-					defaultDuration = try readUInt(size: Int(elem.size))
+					defaultDurationNano = try readUInt(size: Int(elem.size))
 				case .video:
 					(pixelWidth, pixelHeight, displayWidth, displayHeight) = try parseVideo(size: Int(elem.size))
 				case .audio:
@@ -1058,7 +1061,7 @@ class MKVParser {
 			codecID: codecID,
 			name: name,
 			language: language,
-			defaultDuration: defaultDuration,
+			defaultDurationNano: defaultDurationNano,
 			metadata: metadata
 		)
 	}
@@ -1117,7 +1120,7 @@ class MKVParser {
 	}
 	
 	// MARK: - Cluster Parsing
-	private func parseCluster(size: Int, segmentInfo: SegmentInfo?,childElements:inout [EBMLElement]) throws -> MkvCluster 
+	private func parseCluster(size: Int, segmentInfo: SegmentInfo?,tracks:[UInt64:MkvTrackMeta],childElements:inout [EBMLElement]) throws -> MkvCluster 
 	{
 		let endOffset = offset + size
 		let timestampScale = segmentInfo?.timestampScale ?? 1_000_000
@@ -1128,25 +1131,29 @@ class MKVParser {
 		while offset < endOffset {
 			guard let elem = try? readElement() else { break }
 			
+			childElements.append(elem)
+			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .timestamp:
 					clusterTimestamp = try readUInt(size: Int(elem.size))
 				case .simpleBlock:
-					if let sample = try? parseSimpleBlock(
+					var sample = try parseSimpleBlock(
 						size: Int(elem.size),
 						clusterTimestamp: clusterTimestamp,
-						timestampScale: timestampScale
-					) {
-						samples.append(sample)
-					}
+						timestampScale: timestampScale,
+						trackMetas:tracks
+					)
+					samples.append(sample)
+
 				case .blockGroup:
-					if let sample = try? parseBlockGroup(
+					let sample = try parseBlockGroup(
 						size: Int(elem.size),
 						clusterTimestamp: clusterTimestamp,
 						timestampScale: timestampScale
-					) {
-						samples.append(sample)
-					}
+					)
+					print("Block Sample duration \(sample.duration ?? 0)")
+					samples.append(sample)
+					
 				default:
 					offset += Int(elem.size)
 			}
@@ -1155,7 +1162,7 @@ class MKVParser {
 		return MkvCluster(timestamp: clusterTimestamp, samples: samples)
 	}
 	
-	private func parseSimpleBlock(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64) throws -> MkvSample {
+	private func parseSimpleBlock(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvTrackMeta]) throws -> MkvSample {
 		let startOffset = offset
 		let endOffset = offset + size
 		
@@ -1195,6 +1202,13 @@ class MKVParser {
 		
 		// Assign decode timestamp (in file order)
 		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
+
+		//	read default duration
+		var duration : UInt64? = nil
+		if let trackMeta = trackMetas[trackNumber]
+		{
+			duration = trackMeta.defaultDuration
+		}
 		
 		return MkvSample(
 			trackNumber: trackNumber,
@@ -1203,7 +1217,7 @@ class MKVParser {
 			isKeyframe: isKeyframe,
 			fileOffset: frameDataOffset,
 			size: dataSize,
-			duration: nil
+			duration: duration
 		)
 	}
 	
