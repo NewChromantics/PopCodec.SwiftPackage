@@ -294,6 +294,12 @@ struct AtomHeader : Atom
 	var size64 : UInt64?
 	
 	var childAtoms : [any Atom]? = nil
+
+	//	non mp4 atom init with a single size
+	init(fourcc: Fourcc, filePosition: UInt64,size:UInt64) throws
+	{
+		try self.init(fourcc: fourcc, filePosition: filePosition, size: 1, size64: size)
+	}
 	
 	init(fourcc: Fourcc, filePosition: UInt64,size:UInt32,size64:UInt64?) throws
 	{
@@ -319,3 +325,4 @@ struct AtomHeader : Atom
 		}
 	}
 }
+

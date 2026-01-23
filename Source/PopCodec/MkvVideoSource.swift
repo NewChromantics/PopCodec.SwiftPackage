@@ -4,7 +4,8 @@ import PopCommon
 
 extension ByteReader
 {
-	mutating func ReadEbmlElement() async throws -> EBMLElement
+	//	read header, contents follow
+	mutating func ReadEbmlElementHeader() async throws -> EBMLElement
 	{
 		let startingPosition = self.globalPosition
 		let id = try await ReadEbmlElementId()
@@ -14,7 +15,7 @@ extension ByteReader
 		let currentPosition = self.globalPosition
 		let bytesRead = currentPosition - startingPosition
 		let headerSize = bytesRead
-		return EBMLElement(id: id, size: size, dataOffset: Int(startingPosition), headerSize: Int(headerSize), children: [] )
+		return EBMLElement(id: id, size: size, filePosition: startingPosition, headerSize: Int(headerSize), children: [] )
 	}
 	
 	//	very slightly different to readVIntSize()
@@ -191,7 +192,7 @@ public class MkvVideoSource : VideoSource
 		var fileData = try Data(contentsOf:url, options: .uncached)
 		var fileReader = DataReader(data: fileData)
 
-		let magicHeader = try await fileReader.ReadEmblMagicElement()
+		let documentMeta = try await fileReader.ReadEbmlDocumentMetaElement()
 		
 		do
 		{
@@ -207,11 +208,12 @@ public class MkvVideoSource : VideoSource
 	func ReadHeader(fileReader:DataReader) async throws -> MkvHeader
 	{
 		var fileData = try Data(contentsOf:url, options: .uncached)
+		var fileReader = DataReader(data: fileData)
 		let parser = MKVParser(data: fileData)
 		
 		var atoms : [any Atom] = [] 
 		
-		let doc = try parser.parse()
+		let doc = try await parser.parse(fileReader: &fileReader)
 		{
 			//	turn elements into atoms
 			element in
@@ -417,7 +419,7 @@ public class MkvVideoSource : VideoSource
 		var reader = DataReader(data: headerData)
 		do
 		{
-			try await reader.ReadEmblMagicElement()
+			try await reader.ReadEbmlDocumentMetaElement()
 			return true
 		}
 		catch
@@ -549,17 +551,26 @@ enum EBMLElementID: UInt32 {
 }
 
 // MARK: - EBML Element
+//	this can turn into an atom
 struct EBMLElement {
 	let id : UInt32
+	var fourcc : Fourcc			{	type?.fourcc ?? Fourcc(id)	}
 	var type : EBMLElementID?	{	EBMLElementID(rawValue: id)	}
-	let size: UInt64
-	var filePosition : UInt64	{	UInt64(dataOffset - headerSize)	}
-	let dataOffset: Int			//	gr; I think parser is storing this in the wrong place (after header)
+	let contentSize : UInt64
+	//var filePosition : UInt64	{	UInt64(dataOffset - headerSize)	}
+	let filePosition: UInt64			//	gr; I think parser is storing this in the wrong place (after header)
 	let headerSize: Int
 	
 	var totalSize: Int {
 		headerSize + Int(size)
 	}
+	
+	//	eventually this whole EBMLelement will be an atom
+	func GetAsAtomHeader() throws -> AtomHeader
+	{
+		return try AtomHeader(fourcc: fourcc, filePosition: filePosition, size: size)
+	}
+
 	
 	//	for visualisation
 	var children : [EBMLElement]
@@ -656,10 +667,9 @@ struct MkvCluster {
 }
 
 // MARK: - MKV Document
-struct MKVDocument {
-	let ebmlVersion: UInt64
-	let docType: String
-	let docTypeVersion: UInt64
+struct MKVDocument 
+{
+	var meta : MkvDocumentMeta
 	let segmentInfo: SegmentInfo?
 	let tracks: [MkvTrackMeta]
 	let clusters: [MkvCluster]
@@ -688,40 +698,15 @@ class MKVParser {
 		self.data = data
 	}
 	
+	
 	// MARK: - Public Parse Method
-	func parse(onElement:(EBMLElement)->Void) throws -> MKVDocument 
+	func parse(fileReader:inout DataReader,onElement:(EBMLElement)->Void) async throws -> MKVDocument 
 	{
 		offset = 0
 		
-		// Parse EBML header
-		guard let ebmlElement = try? readElement(),
-			  ebmlElement.id == EBMLElementID.ebml.rawValue else {
-			throw MKVError.invalidEBMLHeader
-		}
-		onElement(ebmlElement)
+		let documentMetaAtom = try await fileReader.ReadEbmlDocumentMetaElement()
 		
-		var ebmlVersion: UInt64 = 1
-		var docType = ""
-		var docTypeVersion: UInt64 = 1
-		
-		//	root elements
-		let ebmlEnd = offset + Int(ebmlElement.size)
-		while offset < ebmlEnd {
-			guard let elem = try? readElement() else { break }
-			
-			onElement(elem)
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .ebmlVersion:
-					ebmlVersion = try readUInt(size: Int(elem.size))
-				case .docType:
-					docType = try readString(size: Int(elem.size))
-				case .docTypeVersion:
-					docTypeVersion = try readUInt(size: Int(elem.size))
-				default:
-					offset += Int(elem.size)
-			}
-		}
+		offset = Int(fileReader.globalPosition)
 		
 		// Parse Segment
 		guard var segmentElement = try? readElement(),
@@ -764,10 +749,7 @@ class MKVParser {
 		
 		onElement(segmentElement)
 	
-		return MKVDocument(
-			ebmlVersion: ebmlVersion,
-			docType: docType,
-			docTypeVersion: docTypeVersion,
+		return MKVDocument(meta:documentMetaAtom.documentMeta,
 			segmentInfo: segmentInfo,
 			tracks: tracks,
 			clusters: clusters
@@ -789,7 +771,7 @@ class MKVParser {
 		return EBMLElement(
 			id: id,
 			size: size,
-			dataOffset: offset,
+			filePosition: UInt64(offset),
 			headerSize: headerSize,
 			children: []
 		)
@@ -1322,15 +1304,95 @@ enum MKVError: Error {
 }
 
 
-extension DataReader
+extension ByteReader
 {
-	func ReadEmblMagicElement() async throws
+	mutating func ReadEbmlDocumentMetaElement() async throws -> MkvAtom_Ebml
 	{
 		//	read first element and check it has the correct id
-		let firstElement = try await ReadEbmlElement()
-		if firstElement.type != EBMLElementID.ebml
+		let element = try await ReadEbmlElementHeader()
+		if element.type != EBMLElementID.ebml
 		{
 			throw PopCodecError("First Ebml id is incorrect")
 		}
+		
+		//	turn it into an atom
+		let atomHeader = try element.GetAsAtomHeader()
+		let contentsFilePosition = self.globalPosition
+		let contents = try await self.ReadBytes(Int(element.size))
+		var contentsReader = DataReader(data: contents, globalStartPosition: Int(contentsFilePosition))
+		let atom = try await MkvAtom_Ebml.Decode(header: atomHeader, content: &contentsReader)
+		return atom
+	}
+	
+	//	todo: rename this
+	mutating func readUInt(size: Int) async throws -> UInt64 
+	{
+		var value: UInt64 = 0
+		for i in 0..<size 
+		{
+			let nextByte = try await self.Read8()
+			value = (value << 8) | UInt64(nextByte)
+		}
+		return value
+	}
+	
+	mutating func readString(size: Int) async throws -> String 
+	{
+		let stringBytes = try await self.ReadBytes(size)
+		guard let string = String(data: stringBytes, encoding: .utf8) else
+		{
+			throw PopCodecError("Failed to turn x\(stringBytes.count) bytes into string")
+		}
+		return string
+	}
+}
+
+struct MkvDocumentMeta
+{
+	var ebmlVersion: UInt64 = 1
+	var docType = ""
+	var docTypeVersion: UInt64 = 1
+}
+
+struct MkvAtom_Ebml : Atom, SpecialisedAtom
+{
+	static var fourcc = EBMLElementID.ebml.fourcc
+
+	//	todo: show bad conversons as errors
+	var childAtoms: [any Atom]?	{	childElements.compactMap{ try? $0.GetAsAtomHeader() }	}
+	var childElements : [EBMLElement]
+	
+	var header: AtomHeader
+
+	//	really should just have this meta as atoms
+	var documentMeta : MkvDocumentMeta
+	
+	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	{
+		var meta = MkvDocumentMeta()
+		
+		//	read all the child elements
+		var children : [EBMLElement] = []
+		while content.bytesRemaining > 0
+		{
+			let element = try await content.ReadEbmlElementHeader()
+			
+			//	these should be seperate atoms really
+			switch element.type
+			{
+				case .ebmlVersion:
+					meta.ebmlVersion = try await content.readUInt(size: Int(element.size))
+				case .docType:
+					meta.docType = try await content.readString(size: Int(element.size))
+				case .docTypeVersion:
+					meta.docTypeVersion = try await content.readUInt(size: Int(element.size))
+				default:
+					try await content.SkipBytes(Int(element.size))
+			}
+			
+			children.append(element)
+		}
+		
+		return Self(childElements: children, header: header, documentMeta: meta)
 	}
 }

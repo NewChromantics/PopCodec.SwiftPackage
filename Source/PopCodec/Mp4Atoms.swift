@@ -8,7 +8,7 @@ typealias Seconds = Double	//	TimeInterval, but skip dependency of Foundation
 protocol SpecialisedAtom : Atom
 {
 	static var fourcc : Fourcc	{get}
-	static func Decode(header:AtomHeader,content:inout DataReader) async throws -> Self
+	static func Decode(header:any Atom,content:inout DataReader) async throws -> Self
 	
 	//	just to make it simpler - copy the header that comes in
 	var header : AtomHeader		{get set}
