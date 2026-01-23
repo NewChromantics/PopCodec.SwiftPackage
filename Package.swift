@@ -23,10 +23,17 @@ let package = Package(
 				"PopCodec"
 			]),
 	],
+	
+	dependencies: [
+		.package(url: "https://github.com/NewChromantics/PopCommon.SwiftPackage.git", branch: "main")
+	],
+		
 	targets: [
 		.target(
 			name: "PopCodec",
-			dependencies: []
+			dependencies: [
+				.product(name: "PopCommon", package: "PopCommon.SwiftPackage")
+			]
 		),
 	]
 )

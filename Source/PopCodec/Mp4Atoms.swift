@@ -11,7 +11,7 @@ protocol SpecialisedAtom : Atom
 	static func Decode(header:any Atom,content:inout DataReader) async throws -> Self
 	
 	//	just to make it simpler - copy the header that comes in
-	var header : AtomHeader		{get set}
+	var header : any Atom		{get set}
 }
 
 extension SpecialisedAtom
@@ -134,14 +134,14 @@ struct Atom_ftyp : Atom, SpecialisedAtom
 {
 	static var fourcc : Fourcc	{	Fourcc("ftyp")	}
 	
-	var header: AtomHeader
+	var header: any Atom
 	var childAtoms: [any Atom]?
 	{
 		[InfoAtom(info: type.description, parent: self, uidOffset: 1)]
 	}
 	var type : Fourcc
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Atom_ftyp 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Atom_ftyp 
 	{
 		let type = try await content.ReadFourcc()
 		return Atom_ftyp(header:header,type:type)
@@ -154,7 +154,7 @@ struct Atom_stsd : Atom, SpecialisedAtom
 {
 	static var fourcc : Fourcc	{	Fourcc("stsd")	}
 	
-	var header: AtomHeader
+	var header: any Atom
 	var childAtoms : [any Atom]?	{	metaAtoms + children }
 	var metaAtoms: [any Atom]
 	{[
@@ -167,7 +167,7 @@ struct Atom_stsd : Atom, SpecialisedAtom
 	var flags : UInt32
 	var entryCount : UInt32
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
 		//	 https://www.cimarronsystems.com/wp-content/uploads/2017/04/Elements-of-the-H.264-VideoAAC-Audio-MP4-Movie-v2_0.pdf
 		let version = try await content.Read8()
@@ -229,7 +229,7 @@ struct Atom_avc1 : Atom, SpecialisedAtom, VideoCodecAtom
 {
 	static let fourcc = Fourcc("avc1")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var videoCodecMeta: VideoCodecMeta
 	var codec : CodecWithMetaAtoms?
 	var childAtoms : [any Atom]?
@@ -243,7 +243,7 @@ struct Atom_avc1 : Atom, SpecialisedAtom, VideoCodecAtom
 	var codecMetaAtoms : [any Atom]	{	codec?.GetMetaAtoms(parent: self) ?? []	}
 
 		
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let videoCodecMeta = try await VideoCodecMeta(header: header, data: &content)
 		
@@ -258,7 +258,7 @@ struct Atom_avcc : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("avcC")
 	
-	var header : AtomHeader 
+	var header : any Atom 
 	var version : UInt8
 	var codec : H264Codec
 
@@ -271,7 +271,7 @@ struct Atom_avcc : Atom, SpecialisedAtom
 	
 	
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Atom_avcc 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Atom_avcc 
 	{
 		var h264 = H264Codec()
 		let version = try await content.Read8()
@@ -431,7 +431,7 @@ struct Atom_hev1 : Atom, SpecialisedAtom, VideoCodecAtom
 {
 	static let fourcc = Fourcc("hev1")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var videoCodecMeta: VideoCodecMeta
 	var codec : CodecWithMetaAtoms?
 	var childAtoms : [any Atom]?
@@ -444,7 +444,7 @@ struct Atom_hev1 : Atom, SpecialisedAtom, VideoCodecAtom
 	}
 	var codecMetaAtoms : [any Atom]	{	codec?.GetMetaAtoms(parent: self) ?? []	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let videoCodecMeta = try await VideoCodecMeta(header: header, data: &content)
 		
@@ -460,7 +460,7 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("hvcC")
 	
-	var header : AtomHeader 
+	var header : any Atom 
 	var codec : HevcCodec
 	var metaAtoms : [InfoAtom]
 	
@@ -471,7 +471,7 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 	}
 	
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
 		//	https://github.com/axiomatic-systems/Bento4/blob/master/Source/C%2B%2B/Core/Ap4HvccAtom.cpp#L248
 		//	https://github.com/FFmpeg/FFmpeg/blob/6c878f8b829bc9da4bbb5196c125e55a7c3ac32f/libavcodec/hevc/parse.c#L91
@@ -572,7 +572,7 @@ struct Atom_hvc1 : Atom, SpecialisedAtom, VideoCodecAtom
 {
 	static let fourcc = Fourcc("hvc1")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var videoCodecMeta: VideoCodecMeta
 	var codec : CodecWithMetaAtoms?
 	var childAtoms : [any Atom]?
@@ -586,7 +586,7 @@ struct Atom_hvc1 : Atom, SpecialisedAtom, VideoCodecAtom
 	var codecMetaAtoms : [any Atom]	{	codec?.GetMetaAtoms(parent: self) ?? []	}
 	
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
 		let videoCodecMeta = try await VideoCodecMeta(header: header, data: &content)
 		
@@ -601,7 +601,7 @@ struct Atom_trak : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("trak")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?	{	metaAtoms + children	}
 	var children : [any Atom]
 	var metaAtoms : [any Atom]
@@ -620,7 +620,7 @@ struct Atom_trak : Atom, SpecialisedAtom
 	}
 	var decodeSamplesError : Error?
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Atom_trak 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Atom_trak 
 	{
 		//	do default here, we just need specialisation of trak so we can find it
 		let children = try await header.AutoDecodeChildAtoms(content: &content)
@@ -673,10 +673,10 @@ struct Atom_mp4a : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("mp4a")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let children = try await header.AutoDecodeChildAtoms(content: &content)
 		return Atom_mp4a(header:header, childAtoms:children)
@@ -732,7 +732,7 @@ struct Atom_text : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("text")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{
 		meta.GetMetaAtoms(parent: self) +
@@ -746,7 +746,7 @@ struct Atom_text : Atom, SpecialisedAtom
 	var string : String
 	var unreadBytes : Int
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		//	same prefix as atom_avc1
 		let reserved00000 = try await content.ReadBytes(6)
@@ -803,7 +803,7 @@ struct Atom_stsz : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("stsz")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(sampleSizes.count) sample sizes", parent: self, uidOffset: 0)
@@ -867,7 +867,7 @@ struct Atom_stsz : Atom, SpecialisedAtom
 		return sizes
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let sizes = try await ReadSizes(content: &content)
 		
@@ -880,7 +880,7 @@ struct Atom_ctts : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("ctts")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(presentationTimeOffsets.count) sample presentation offsets", parent: self, uidOffset: 0)
@@ -909,7 +909,7 @@ struct Atom_ctts : Atom, SpecialisedAtom
 		return (version,flags,durations)
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let (version,flags,durations) = try await DecodeRle(content: &content)
 
@@ -922,7 +922,7 @@ struct Atom_stts : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("stts")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(sampleDurations.count) sample durations", parent: self, uidOffset: 0)
@@ -933,7 +933,7 @@ struct Atom_stts : Atom, SpecialisedAtom
 	var sampleDurations : [UInt32]	//	can these be negative? presentation offsets can be
 	
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let (version,flags,durations) = try await Atom_ctts.DecodeRle(content: &content)
 		let durationsUnsigned = durations.map{ UInt32($0)	}
@@ -948,7 +948,7 @@ struct Atom_stbl : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("stbl")
 	
-	var header : AtomHeader
+	var header : any Atom
 
 	var childAtoms : [any Atom]?	{	children	} 
 	var children : [any Atom]
@@ -1026,7 +1026,7 @@ struct Atom_stbl : Atom, SpecialisedAtom
 		return samples
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let children = try await header.AutoDecodeChildAtoms(content: &content)
 		
@@ -1039,7 +1039,7 @@ struct Atom_stss : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("stss")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(keyframeIndexes.count) keyframes", parent: self, uidOffset: 0)
@@ -1087,7 +1087,7 @@ struct Atom_stss : Atom, SpecialisedAtom
 		return keyframeIndexes;
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let keyframeIndexes = try await ReadKeyframeIndexes(content: &content)
 		
@@ -1104,7 +1104,7 @@ struct Atom_stco : Atom, SpecialisedAtom, Atom_WithChunkOffsets
 {
 	static let fourcc = Fourcc("stco")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(chunkOffsets.count) sample chunk offsets", parent: self, uidOffset: 0),
@@ -1128,7 +1128,7 @@ struct Atom_stco : Atom, SpecialisedAtom, Atom_WithChunkOffsets
 		return (version,flags,offsets)
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let (version,flags,offsets) = try await DecodeOffsets(content: &content)
 		
@@ -1141,7 +1141,7 @@ struct Atom_co64 : Atom, SpecialisedAtom, Atom_WithChunkOffsets
 {
 	static let fourcc = Fourcc("co64")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(chunkOffsets.count) sample chunk offsets", parent: self, uidOffset: 0),
@@ -1165,7 +1165,7 @@ struct Atom_co64 : Atom, SpecialisedAtom, Atom_WithChunkOffsets
 		return (version,flags,offsets)
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let (version,flags,offsets) = try await DecodeOffsets(content: &content)
 		
@@ -1179,7 +1179,7 @@ struct Atom_stsc : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("stsc")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var childAtoms : [any Atom]?
 	{[
 		InfoAtom(info: "\(packedChunkMetas.count) packed sample chunks", parent: self, uidOffset: 0),
@@ -1232,7 +1232,7 @@ struct Atom_stsc : Atom, SpecialisedAtom
 		return (version,flags,chunkMetas)
 	}
 	
-	static func Decode(header: AtomHeader, content:inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content:inout DataReader) async throws -> Self 
 	{
 		let (version,flags,chunkMetas) = try await DecodeChunkMetas(content: &content)
 		
@@ -1245,12 +1245,12 @@ struct Atom_mdhd : Atom, SpecialisedAtom
 {
 	static let fourcc = Fourcc("mdhd")
 	
-	var header : AtomHeader
+	var header : any Atom
 	var mediaMeta : MediaMeta
 	var childAtoms: [any Atom]?	{	metaAtoms	}
 	var metaAtoms : [any Atom]	{	mediaMeta.GetMetaAtoms(parent: self)	}
 	
-	static func Decode(header: AtomHeader, content: inout DataReader) async throws -> Self 
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
 		var meta = MediaMeta()
 		meta.version = try await content.Read8();
