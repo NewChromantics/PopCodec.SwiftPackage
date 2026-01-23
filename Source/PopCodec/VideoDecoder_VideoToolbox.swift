@@ -1,60 +1,7 @@
-//
-//  VideoDecoder_VideoToolbox.swift
-//  PopCodec
-//
-//  Created by Graham Reeves on 16/01/2026.
-//
-
 import VideoToolbox
 import CoreMedia
 import PopCommon
 
-
-
-struct CoreMediaBlockBufferError : LocalizedError
-{
-	var result : OSStatus
-	var context : String
-	
-	//	returns nil if not an error
-	public init?(result:OSStatus,context:String)
-	{
-		if result == kCMBlockBufferNoErr	//	0
-		{
-			return nil
-		}
-		self.result = result
-		self.context = context
-	}
-	
-	var errorDescription: String?
-	{
-		return "\(context): \(result.coreMediaBlockBufferError)"
-	}
-}
-
-extension OSStatus
-{
-	var coreMediaBlockBufferError : String
-	{
-		switch self
-		{
-			case kCMBlockBufferNoErr:							return "kCMBlockBufferNoErr"
-			case kCMBlockBufferStructureAllocationFailedErr:	return "kCMBlockBufferStructureAllocationFailedErr"
-			case kCMBlockBufferBlockAllocationFailedErr:		return "kCMBlockBufferBlockAllocationFailedErr"
-			case kCMBlockBufferBadCustomBlockSourceErr:			return "kCMBlockBufferBadCustomBlockSourceErr"
-			case kCMBlockBufferBadOffsetParameterErr:			return "kCMBlockBufferBadOffsetParameterErr"
-			case kCMBlockBufferBadLengthParameterErr:			return "kCMBlockBufferBadLengthParameterErr"
-			case kCMBlockBufferBadPointerParameterErr:			return "kCMBlockBufferBadPointerParameterErr"
-			case kCMBlockBufferEmptyBBufErr:					return "kCMBlockBufferEmptyBBufErr"
-			case kCMBlockBufferUnallocatedBlockErr:				return "kCMBlockBufferUnallocatedBlockErr"
-			case kCMBlockBufferInsufficientSpaceErr:			return "kCMBlockBufferInsufficientSpaceErr"
-			default:
-				return "UnknownCoreMediaBlockBuffer(OSStatus=\(self)"
-		}
-	}
-
-}
 
 
 
@@ -281,7 +228,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		guard let lastDecodedIndex else
 		{
 			//	not in the list
-			print("Decode all samples")
+			print("Decoding whole batch, \(samples.count) samples")
 			return ArraySlice(samples)
 		}
 		
@@ -445,21 +392,50 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 				
 				guard let imageBuffer else
 				{
-					print("decode error - invalidate lastSubmitedDecodeTime(\(self.lastSubmitedDecodeTime))")
+					//	some errors that mean we need to restart the session
+					if self.IsRestartSessionError(status)
+					{
+						print("Todo: restart decoder session")
+					}
+					
+					let error : Error = VideoToolboxError(status,context:"Decode frame (decode time=\(meta.decodeTime))") ?? 
+						PopCodecError("Missing image in decode")
+					
+					print("decode error(\(status)) - invalidate lastSubmitedDecodeTime(\(self.lastSubmitedDecodeTime))")
 					self.lastSubmitedDecodeTime = nil
-					self.onDecodeError(outputPresetentationMs,PopCodecError("Failed to decode frame status=\(status)"))
+					self.onDecodeError(outputPresetentationMs,error)
 					return
 				}
 				let frame = OutputVideoFrame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
 				self.onFrameDecoded(frame)
 			}
-			print("Updating lastSubmitedDecodeTime to \(meta.decodeTime)")
+			if let error = VideoToolboxError(decodeFrameResult,context:"Decode frame (decode time=\(meta.decodeTime))")
+			{
+				throw error
+			}
+			print("Updating lastSubmitedDecodeTime to \(meta.decodeTime) - \(decodeFrameResult)")
 			lastSubmitedDecodeTime = Millisecond(meta.decodeTime)
 		}
 		catch
 		{
 			self.onDecodeError(meta.presentationTime,error)
 			throw error
+		}
+	}
+	
+	func IsRestartSessionError(_ error:OSStatus) -> Bool
+	{
+		switch error
+		{
+			//	gr: this might mean we're calculating dependencies wrong for hevc?
+			//	https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/videotoolbox.c#L732
+			case kVTVideoDecoderReferenceMissingErr:	return true
+				
+			case kVTVideoDecoderMalfunctionErr:	return true
+			case kVTInvalidSessionErr:			return true
+			
+			default: 
+				return false
 		}
 	}
 }

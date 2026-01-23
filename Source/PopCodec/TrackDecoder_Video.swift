@@ -84,9 +84,23 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		//return try VideoToolboxH264Decoder(codecMeta:codecMeta,onFrameDecoded: OnFrameDecoded,onDecodeError: OnFrameError)
 	}
 	
-	private func OnFrameError(presentationFrame:Millisecond,error:Error)
+	private func OnFrameError(presentationTime:Millisecond,error:Error)
 	{
+		//	dont replace a good frame with a bad frame
+		//	and whether its good or bad, we'll ignore this error
+		if let existingIndex = decodedFrames.firstIndex(where: {$0.presentationTime == presentationTime})
+		{
+			let existingFrame = decodedFrames[existingIndex]
+			print("discarding duplicate frame \(presentationTime) (was error=\(existingFrame.hasError), now error=true)")
+			return
+		}
+		print("Got new error frame \(presentationTime)")
 		
+		//	need to resolve pending fetches
+		decodedFrames.append( .error((presentationTime,error)) )
+		
+		//	cull 
+		CullOldDecodedFrames()
 	}
 	
 	private func OnFrameDecoded(frame:FrameType)
