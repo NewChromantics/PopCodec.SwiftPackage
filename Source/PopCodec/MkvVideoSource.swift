@@ -615,7 +615,7 @@ struct MkvTextMeta {
 
 // MARK: - Segment Info
 struct SegmentInfo {
-	let timestampScale: UInt64
+	let timestampScale: UInt64?	//	X to nano - defaults to 1_000_000
 	let duration: Double?
 	let muxingApp: String?
 	let writingApp: String?
@@ -623,14 +623,32 @@ struct SegmentInfo {
 }
 
 // MARK: - Sample/Frame Data
-struct MkvSample {
+struct MkvSample 
+{
 	let trackNumber: UInt64
-	let timestamp: Int64  // Presentation timestamp in milliseconds
+	
+	let segmentTimestampScale : UInt64?
+	var timestampScale : UInt64			{	segmentTimestampScale ?? 1_000_000	}
+	let presentationTimeInClusterUnscaled : Int16
+	let clusterPresentationTimeUnscaled : UInt64
 	let decodeTimestamp: Int64  // Decode timestamp in milliseconds
+	
+	var presentationTimeNanos : Int64	{	(Int64(clusterPresentationTimeUnscaled) + Int64(presentationTimeInClusterUnscaled) ) * Int64(timestampScale)	}
+	var presentationTime : Millisecond	{	Millisecond( presentationTimeNanos / 1_000_000 )	}
+	
+	var timestamp: Millisecond  {	presentationTime	}
 	let isKeyframe: Bool
 	let fileOffset: Int   // Offset in the file where sample data starts
 	let size: Int         // Size of sample data in bytes
 	var duration: UInt64? // In track time scale units
+	
+	func GetDecodeTimeStamp(sampleIndexInTrack:UInt64) -> Millisecond
+	{
+		let segmentTimescale = timestampScale
+		let nanos = sampleIndexInTrack * segmentTimescale
+		let ms = nanos / 1_000_000
+		return ms
+	}
 	
 	/// Read the sample data from the original Data object
 	func readData(from data: Data) -> Data? {
@@ -640,8 +658,11 @@ struct MkvSample {
 }
 
 // MARK: - Cluster
-struct MkvCluster {
-	let timestamp: UInt64
+struct MkvCluster 
+{
+	var clusterTimestampUnscaled : UInt64
+	var segmentTimescale : UInt64
+	var timestamp: UInt64			{	clusterTimestampUnscaled * segmentTimescale	}
 	let samples: [MkvSample]
 	
 	/// Returns samples sorted by decode timestamp for proper decoding
@@ -913,9 +934,10 @@ class MKVParser {
 	private func parseCluster(size: UInt64, segmentInfo: SegmentInfo?,tracks:[UInt64:MkvAtom_TrackMeta],childElements:inout [any Atom]) throws -> MkvCluster 
 	{
 		let endOffset = offset + Int(size)
-		let timestampScale = segmentInfo?.timestampScale ?? 1_000_000
+		var clusterTimestampUnscaled : UInt64 = 0
+		let segmentTimescale = segmentInfo?.timestampScale ?? 1_000_000
 		
-		var clusterTimestamp: UInt64 = 0
+		//	sort these into tracks
 		var samples: [MkvSample] = []
 		
 		while offset < endOffset {
@@ -925,12 +947,12 @@ class MKVParser {
 			
 			switch EBMLElementID(rawValue: elem.id) {
 				case .timestamp:
-					clusterTimestamp = try readUInt(size: Int(elem.size))
+					clusterTimestampUnscaled = try readUInt(size: Int(elem.size))
 				case .simpleBlock:
 					var sample = try parseSimpleBlock(
 						size: Int(elem.size),
-						clusterTimestamp: clusterTimestamp,
-						timestampScale: timestampScale,
+						clusterTimestampUnscaled: clusterTimestampUnscaled,
+						timestampScale:segmentTimescale,
 						trackMetas:tracks
 					)
 					samples.append(sample)
@@ -938,8 +960,8 @@ class MKVParser {
 				case .blockGroup:
 					let sample = try parseBlockGroup(
 						size: Int(elem.size),
-						clusterTimestamp: clusterTimestamp,
-						timestampScale: timestampScale
+						clusterTimestampUnscaled: clusterTimestampUnscaled,
+						timestampScale: segmentTimescale
 					)
 					if sample.duration == nil
 					{
@@ -953,10 +975,10 @@ class MKVParser {
 			}
 		}
 		
-		return MkvCluster(timestamp: clusterTimestamp, samples: samples)
+		return MkvCluster(clusterTimestampUnscaled: clusterTimestampUnscaled, segmentTimescale: segmentTimescale, samples: samples)
 	}
 	
-	private func parseSimpleBlock(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvAtom_TrackMeta]) throws -> MkvSample {
+	private func parseSimpleBlock(size: Int, clusterTimestampUnscaled: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvAtom_TrackMeta]) throws -> MkvSample {
 		let startOffset = offset
 		let endOffset = offset + size
 		
@@ -968,7 +990,7 @@ class MKVParser {
 			throw MKVError.endOfData
 		}
 		let timestampBytes = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
-		let relativeTimestamp = Int16(bitPattern: timestampBytes)
+		let relativeTimestampUnscaled = Int16(bitPattern: timestampBytes)
 		offset += 2
 		
 		// Read flags
@@ -989,11 +1011,12 @@ class MKVParser {
 		
 		// Skip over the data (don't copy it)
 		offset += dataSize
-		
+		/*
+		let relativeTimestampNanos = Int(relativeTimestampValue) * Int(timestampScale)
 		// Calculate absolute timestamp in milliseconds
 		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
 		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
-		
+		*/
 		// Assign decode timestamp (in file order)
 		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
 
@@ -1006,7 +1029,9 @@ class MKVParser {
 		
 		return MkvSample(
 			trackNumber: trackNumber,
-			timestamp: timestampMs,
+			segmentTimestampScale: timestampScale, 
+			presentationTimeInClusterUnscaled: relativeTimestampUnscaled,
+			clusterPresentationTimeUnscaled: clusterTimestampUnscaled,
 			decodeTimestamp: decodeTimestamp,
 			isKeyframe: isKeyframe,
 			fileOffset: frameDataOffset,
@@ -1015,13 +1040,13 @@ class MKVParser {
 		)
 	}
 	
-	private func parseBlockGroup(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64) throws -> MkvSample {
+	private func parseBlockGroup(size: Int, clusterTimestampUnscaled: UInt64, timestampScale: UInt64) throws -> MkvSample {
 		let endOffset = offset + size
 		
 		var frameDataOffset: Int = 0
 		var frameDataSize: Int = 0
 		var trackNumber: UInt64 = 0
-		var relativeTimestamp: Int16 = 0
+		var relativeTimestampUnscaled: Int16 = 0
 		var isKeyframe = true
 		var duration: UInt64?
 		
@@ -1040,7 +1065,7 @@ class MKVParser {
 						throw MKVError.endOfData
 					}
 					let timestampBytes = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
-					relativeTimestamp = Int16(bitPattern: timestampBytes)
+					relativeTimestampUnscaled = Int16(bitPattern: timestampBytes)
 					offset += 2
 					
 					// Read flags
@@ -1079,7 +1104,7 @@ class MKVParser {
 		}
 		
 		// Calculate absolute timestamp in milliseconds
-		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
+		let absoluteTimestamp = Int64(clusterTimestampUnscaled) + Int64(relativeTimestampUnscaled)
 		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
 		
 		// Assign decode timestamp (in file order)
@@ -1087,7 +1112,10 @@ class MKVParser {
 		
 		return MkvSample(
 			trackNumber: trackNumber,
-			timestamp: timestampMs,
+			segmentTimestampScale: timestampScale,
+			presentationTimeInClusterUnscaled: relativeTimestampUnscaled,
+			clusterPresentationTimeUnscaled: clusterTimestampUnscaled,
+			//timestamp: timestampMs,
 			decodeTimestamp: decodeTimestamp,
 			isKeyframe: isKeyframe,
 			fileOffset: frameDataOffset,
@@ -1264,7 +1292,7 @@ struct MkvAtom_SegmentInfo : Atom, SpecialisedAtom
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
 		var children : [any Atom] = []
-		var timestampScale : UInt64 = 1_000_000
+		var timestampScale : UInt64?
 		var duration : Double?
 		var muxingApp : String?
 		var writingApp : String?
