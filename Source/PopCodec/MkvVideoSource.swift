@@ -240,7 +240,7 @@ public class MkvVideoSource : VideoSource
 				return cluster.samples
 			}
 			let trackSamples = allSamples.filter{ $0.trackNumber == track.number }
-			let samples = trackSamples.map
+			var samples = trackSamples.map
 			{
 				mkvSample in
 				let filePosition = UInt64(mkvSample.fileOffset)
@@ -250,7 +250,7 @@ public class MkvVideoSource : VideoSource
 				let duration = mkvSample.duration ?? track.defaultDuration ?? 0
 				return Mp4Sample(mdatOffset: filePosition, size: size, decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: mkvSample.isKeyframe)
 			}
-			
+			samples.sort{ a,b in a.presentationTime < b.presentationTime }
 			
 			if let firstSample = samples.first, let lastSample = samples.last
 			{
