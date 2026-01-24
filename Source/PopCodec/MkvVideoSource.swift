@@ -186,34 +186,56 @@ public class MkvVideoSource : VideoSource
 		var fileReader = DataReader(data: fileData)
 		let parser = MKVParser(data: fileData)
 		
-		var atoms : [any Atom] = [] 
+		var atoms : [any Atom] = []
+		var segmentAtom : MkvAtom_Segment?
 		
-		let doc = try await parser.parse(fileReader: &fileReader)
+		try await parser.parse(fileReader: &fileReader)
 		{
-			element in
-			atoms.append(element)
+			atom in
+			atoms.append(atom)
+			
+			if let seg = atom as? MkvAtom_Segment
+			{
+				segmentAtom = seg
+			}
 		}		
+
+		guard let segmentAtom else
+		{
+			throw PopCodecError("No segment atom found")
+		}
+		var trackAtoms : [MkvAtom_TrackMeta] = segmentAtom.tracks
+		guard !trackAtoms.isEmpty else
+		{
+			throw PopCodecError("No track atoms")
+		}
 		
+		var clusterAtoms : [MkvCluster] = segmentAtom.clusters
+		guard !clusterAtoms.isEmpty else
+		{
+			throw PopCodecError("No cluster atoms")
+		}
 		
 		//	this is async because of data reader, so precalc it for sync .map
 		var trackEncoding : [UInt64:TrackEncoding] = [:]
-		for track in doc.tracks
+		for track in trackAtoms
 		{
-			let encoding = await track.GetEncoding()
-			trackEncoding[track.uid] = encoding
+			let encoding = await track.meta.GetEncoding()
+			trackEncoding[track.meta.uid] = encoding
 		}
 		
 		
-		let trackMetas = doc.tracks.map
+		let trackMetas = trackAtoms.map
 		{
-			track in
+			trackAtom in
+			let track = trackAtom.meta
 			
 			let trackUid = track.name ?? "\(track.number)"////"\(track.uid)"
 			var duration = track.defaultDuration ?? 0 
 			var trackStartTime = Millisecond(0)
 			let encoding = trackEncoding[track.uid]!
 			
-			let allSamples = doc.clusters.flatMap
+			let allSamples = clusterAtoms.flatMap
 			{
 				cluster in
 				return cluster.samples
@@ -661,13 +683,13 @@ struct MkvCluster {
 		samples.sorted { $0.decodeTimestamp < $1.decodeTimestamp }
 	}
 }
-
+/*
 // MARK: - MKV Document
 struct MKVDocument 
 {
 	var meta : MkvDocumentMeta
-	let segmentMeta : MkvAtom_SegmentInfo?
-	let tracks: [MkvTrackMeta]
+	//let segmentMeta : MkvAtom_SegmentInfo?
+	let tracks: [MkvAtom_TrackMeta]
 	let clusters: [MkvCluster]
 	
 	/// Returns all samples from all clusters sorted by decode order
@@ -682,7 +704,7 @@ struct MKVDocument
 			.filter { $0.trackNumber == trackNumber }
 	}
 }
-
+*/
 // MARK: - MKV Parser
 class MKVParser {
 	private let data: Data
@@ -702,12 +724,12 @@ class MKVParser {
 		{
 			throw PopCodecError("Expecting segment element but got \(segmentHeader.fourcc)")
 		}
-		onAtom(segmentHeader)
+		//onAtom(segmentHeader)
 
 				
 		//	these should all be atoms
 		var segmentInfoAtom: MkvAtom_SegmentInfo?
-		var tracks: [MkvTrackMeta] = []
+		var tracks: [MkvAtom_TrackMeta] = []
 		var clusters: [MkvCluster] = []
 		
 		var segmentContent = try await fileReader.GetReaderForBytes(byteCount: segmentHeader.contentSize)
@@ -735,7 +757,7 @@ class MKVParser {
 						throw PopCodecError("Cannot parse cluster without segment info")
 					}
 					//	speed up track lookup
-					let trackMap = Dictionary(uniqueKeysWithValues: tracks.map{ ($0.number, $0) } )
+					let trackMap = Dictionary(uniqueKeysWithValues: tracks.map{ ($0.meta.number, $0.meta) } )
 					let cluster = try parseCluster(size: element.contentSize, segmentInfo: segmentInfo, tracks:trackMap,childElements:&children) 
 					clusters.append(cluster)
 					
@@ -758,18 +780,13 @@ class MKVParser {
 	}
 	
 	// MARK: - Public Parse Method
-	func parse(fileReader:inout DataReader,onAtom:(any Atom)->Void) async throws -> MKVDocument 
+	func parse(fileReader:inout DataReader,onAtom:(any Atom)->Void) async throws 
 	{
 		let documentMetaAtom = try await fileReader.ReadEbmlDocumentMetaElement()
 		onAtom(documentMetaAtom)
 		
 		let segmentAtom = try await ReadSegmentAtom(fileReader:&fileReader, onAtom:onAtom)
-	
-		return MKVDocument(meta:documentMetaAtom.documentMeta,
-						   segmentMeta: segmentAtom.segmentInfo,
-						   tracks: segmentAtom.tracks,
-						   clusters: segmentAtom.clusters
-		)
+		onAtom(segmentAtom)
 	}
 	
 	// MARK: - Element Reading
@@ -920,19 +937,21 @@ class MKVParser {
 	
 	
 	// MARK: - Tracks Parsing
-	private func parseTracks(size: UInt64,childElements:inout [any Atom]) throws -> [MkvTrackMeta] 
+	private func parseTracks(size: UInt64,childElements:inout [any Atom]) throws -> [MkvAtom_TrackMeta] 
 	{
 		let endOffset = offset + Int(size)
-		var tracks: [MkvTrackMeta] = []
+		var tracks: [MkvAtom_TrackMeta] = []
 		
 		while offset < endOffset 
 		{
 			let elem = try readElement()
 			childElements.append(elem)
-			if EBMLElementID(rawValue: elem.id) == .trackEntry 
+			
+			if elem.type == .trackEntry 
 			{
-				let track = try parseTrackEntry(size: Int(elem.size)) 
-				tracks.append(track)
+				let track = try parseTrackEntry(size: Int(elem.size))
+				let trackAtom = MkvAtom_TrackMeta(header: elem, meta: track)
+				tracks.append(trackAtom)
 			}
 			else 
 			{
@@ -1415,22 +1434,12 @@ struct MkvAtom_Segment : Atom, SpecialisedAtom
 	var header: any Atom
 	var childAtoms: [any Atom]?
 	{
-		([segmentInfo] + trackMetaAtoms).compactMap{$0}
+		([segmentInfo] + tracks).compactMap{$0}
 	}
-	var trackMetaAtoms : [any Atom]
-	{
-		tracks.enumerated().map
-		{
-			trackIndex,trackMeta in
-			var trackInfo = InfoAtom(info: "Track", parent: self, uidOffset: trackIndex*10)
-			trackInfo.childAtoms = trackMeta.GetMetaAtoms(parent: trackInfo)
-			return trackInfo
-		}
-	}
-	
+
 	//	really should just have this meta as atoms
 	var segmentInfo : MkvAtom_SegmentInfo?
-	var tracks : [MkvTrackMeta]
+	var tracks : [MkvAtom_TrackMeta]
 	var clusters : [MkvCluster]
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
@@ -1491,5 +1500,25 @@ struct MkvAtom_SegmentInfo : Atom, SpecialisedAtom
 			title: title
 		)
 		return Self(header: header, childAtoms: children, segmentInfo: segmentInfo)
+	}
+}
+
+
+struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
+{
+	static var fourcc = EBMLElementID.trackEntry.fourcc
+	
+	var header: any Atom
+	var childAtoms: [any Atom]?
+	{
+		meta.GetMetaAtoms(parent: self)
+	}
+	
+	//	really should just have this meta as atoms
+	var meta : MkvTrackMeta
+	
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
+	{
+		throw PopCodecError("todo")
 	}
 }
