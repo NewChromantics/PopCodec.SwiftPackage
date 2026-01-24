@@ -694,33 +694,36 @@ class MKVParser {
 	}
 	
 	
-	func ReadSegmentAtom(onAtom:(any Atom)->Void) async throws -> MkvAtom_Segment
+	func ReadSegmentAtom(fileReader:inout DataReader,onAtom:(any Atom)->Void) async throws -> MkvAtom_Segment
 	{
 		//	annoyingly the segment is massive, so we dont want to read all the data at once
-		let segmentHeader = try readElement()
+		let segmentHeader = try await fileReader.ReadEbmlElementHeader()
 		guard segmentHeader.type == .segment else
 		{
 			throw PopCodecError("Expecting segment element but got \(segmentHeader.fourcc)")
 		}
-		
+		onAtom(segmentHeader)
+
+				
 		//	these should all be atoms
 		var segmentInfoAtom: MkvAtom_SegmentInfo?
 		var tracks: [MkvTrackMeta] = []
 		var clusters: [MkvCluster] = []
-		let segmentEnd = offset+Int(segmentHeader.contentSize)
 		
-		//let segmentContentData = data[offset..<segmentEnd]
-		
-		
-		while offset < segmentEnd && offset < data.count 
+		var segmentContent = try await fileReader.GetReaderForBytes(byteCount: segmentHeader.contentSize)
+			
+		while segmentContent.bytesRemaining > 0
 		{
-			var element = try readElement()
+			var element = try await segmentContent.ReadEbmlElementHeader()
 			var children : [any Atom] = []
+			
+			self.offset = Int(element.contentFilePosition)
+			var elementContent = try await segmentContent.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
 			
 			switch element.type
 			{
 				case .info:
-					segmentInfoAtom = try await parseSegmentInfo(header:element, size: element.contentSize, childElements: &children)
+					segmentInfoAtom = try await MkvAtom_SegmentInfo.Decode(header: element, content: &elementContent)
 					
 				case .tracks:
 					let parsedTracks = try parseTracks(size: element.contentSize, childElements: &children)
@@ -737,7 +740,8 @@ class MKVParser {
 					clusters.append(cluster)
 					
 				default:
-					offset += Int(element.contentSize)
+					//try await segmentContent.SkipBytes(Int(element.contentSize))
+					print("Unhandled element \(element.fourcc)")
 			}
 			
 			//	leave .childAtoms null if possible
@@ -756,14 +760,10 @@ class MKVParser {
 	// MARK: - Public Parse Method
 	func parse(fileReader:inout DataReader,onAtom:(any Atom)->Void) async throws -> MKVDocument 
 	{
-		offset = 0
-		
 		let documentMetaAtom = try await fileReader.ReadEbmlDocumentMetaElement()
+		onAtom(documentMetaAtom)
 		
-		offset = Int(fileReader.globalPosition)
-		
-		let segmentAtom = try await ReadSegmentAtom(onAtom:onAtom)
-		onAtom(segmentAtom)
+		let segmentAtom = try await ReadSegmentAtom(fileReader:&fileReader, onAtom:onAtom)
 	
 		return MKVDocument(meta:documentMetaAtom.documentMeta,
 						   segmentMeta: segmentAtom.segmentInfo,
@@ -918,21 +918,6 @@ class MKVParser {
 		return Data(result)
 	}
 	
-	private func parseSegmentInfo(header:any Atom,size: UInt64,childElements:inout [any Atom]) async throws -> MkvAtom_SegmentInfo 
-	{
-		//	it seems that making a data subscript/slice of another data which doesnt start at zero... crashes
-		//	starting at 0 with an offset, doesnt crash
-		//let contentData = data[offset..<offset+Int(size)]
-		//var content = DataReader(data: contentData,position: 0,globalStartPosition:0)
-		let contentData = data[0..<offset+Int(size)]
-		var content = DataReader(data: contentData,position: offset,globalStartPosition:0)
-
-		offset += Int(size)
-		//let endOffset = offset + Int(size)
-		
-		let atom = try await MkvAtom_SegmentInfo.Decode(header: header, content: &content)
-		return atom
-	}
 	
 	// MARK: - Tracks Parsing
 	private func parseTracks(size: UInt64,childElements:inout [any Atom]) throws -> [MkvTrackMeta] 

@@ -11,6 +11,9 @@ public protocol ByteReader
 	mutating func ReadBytes(_ byteCount:Int) async throws -> Data
 	mutating func ReadBytes<TYPE>(to buffer:inout TYPE,reverse:Bool) async throws
 	mutating func ReadBytes<TYPE>(to buffer:inout Array<TYPE>) async throws
+	
+	//	get a reader for the this next amount of bytes, (and skip it)
+	mutating func GetReaderForBytes(byteCount:UInt64) async throws -> ByteReader
 }
 
 extension ByteReader
@@ -184,6 +187,24 @@ public class DataReader : ByteReader
 		self.data = data
 	}
 	
+	//	get a reader for the this next amount of bytes, (and skip it)
+	public func GetReaderForBytes(byteCount:UInt64) async throws -> any ByteReader
+	{
+		//	check there's enough data left
+		_ = try await self.PeekBytes(filePosition: UInt64(position), byteCount: byteCount)  
+		
+		//	it seems that making a data subscript/slice of another data which doesnt start at zero... crashes
+		//	starting at 0 with an offset, doesnt crash
+		//let contentData = data[offset..<offset+Int(size)]
+		//var content = DataReader(data: contentData,position: 0,globalStartPosition:0)
+		let sliceSize = UInt64(self.position) + byteCount
+		let contentData = data[0..<sliceSize]
+		var content = DataReader(data: contentData,position: position,globalStartPosition:self.globalStartPosition)
+		//	now skip over it as we've "read" it into this other reader
+		try await self.SkipBytes(Int(byteCount))
+		return content
+	}
+
 	public func PeekBytes(filePosition: UInt64, byteCount: UInt64) async throws -> Data 
 	{
 		let read = data[filePosition..<filePosition+byteCount]
