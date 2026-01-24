@@ -610,7 +610,7 @@ struct MkvTrackMeta
 	var defaultDuration: Millisecond?	{	defaultDurationNano.map{ $0 / 1_000_000 }	}
 	let metadata: MkvTrackMetadata
 
-	private var defaultDurationString : String?	{	defaultDuration.map{ "\($0)ms" } ?? "null"	}
+	private var defaultDurationString : String	{	defaultDuration.map{ "\($0)ms" } ?? "null"	}
 	
 	func GetMetaAtoms(parent:any Atom) -> [InfoAtom]
 	{
@@ -702,11 +702,9 @@ class MKVParser {
 		{
 			throw PopCodecError("Expecting segment element but got \(segmentHeader.fourcc)")
 		}
-		onAtom(segmentHeader)
 		
 		//	these should all be atoms
 		var segmentInfoAtom: MkvAtom_SegmentInfo?
-		var segmentInfo: SegmentInfo?
 		var tracks: [MkvTrackMeta] = []
 		var clusters: [MkvCluster] = []
 		let segmentEnd = offset+Int(segmentHeader.contentSize)
@@ -722,15 +720,14 @@ class MKVParser {
 			switch element.type
 			{
 				case .info:
-					//segmentInfo = try parseSegmentInfo(size: element.contentSize, childElements: &children)
-					segmentInfoAtom = try await parseSegmentInfoAtom(header:element, size: element.contentSize, childElements: &children)
+					segmentInfoAtom = try await parseSegmentInfo(header:element, size: element.contentSize, childElements: &children)
 					
 				case .tracks:
 					let parsedTracks = try parseTracks(size: element.contentSize, childElements: &children)
 					tracks.append(contentsOf: parsedTracks)
 					
 				case .cluster:
-					guard let segmentInfo = segmentInfo ?? segmentInfoAtom?.segmentInfo else
+					guard let segmentInfo = segmentInfoAtom?.segmentInfo else
 					{
 						throw PopCodecError("Cannot parse cluster without segment info")
 					}
@@ -752,8 +749,7 @@ class MKVParser {
 		}
 		
 	
-		let segmentMetaAtom = segmentInfoAtom ?? segmentInfo.map{ MkvAtom_SegmentInfo(header: segmentHeader, segmentInfo: $0) }
-		let segment = MkvAtom_Segment(header: segmentHeader, segmentInfo: segmentMetaAtom, tracks: tracks, clusters: clusters)
+		let segment = MkvAtom_Segment(header: segmentHeader, segmentInfo: segmentInfoAtom, tracks: tracks, clusters: clusters)
 		return segment
 	}
 	
@@ -767,7 +763,7 @@ class MKVParser {
 		offset = Int(fileReader.globalPosition)
 		
 		let segmentAtom = try await ReadSegmentAtom(onAtom:onAtom)
-		
+		onAtom(segmentAtom)
 	
 		return MKVDocument(meta:documentMetaAtom.documentMeta,
 						   segmentMeta: segmentAtom.segmentInfo,
@@ -922,48 +918,7 @@ class MKVParser {
 		return Data(result)
 	}
 	
-	private func parseSegmentInfo(size: UInt64,childElements:inout [any Atom]) throws -> SegmentInfo 
-	{
-		let endOffset = offset + Int(size)
-		
-		var timestampScale: UInt64 = 1_000_000
-		var duration: Double?
-		var muxingApp: String?
-		var writingApp: String?
-		var title: String?
-		
-		while offset < endOffset {
-			guard let elem = try? readElement() else { break }
-			childElements.append(elem)
-			print("segment info \(elem.fourcc) x\(elem.contentSize) @\(elem.filePosition)")
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .timestampScale:
-					timestampScale = try readUInt(size: Int(elem.size))
-				case .duration:
-					duration = try readFloat(size: Int(elem.size))
-				case .muxingApp:
-					muxingApp = try readString(size: Int(elem.size))
-				case .writingApp:
-					writingApp = try readString(size: Int(elem.size))
-				case .title:
-					title = try readString(size: Int(elem.size))
-				default:
-					offset += Int(elem.size)
-			}
-		}
-		
-		return SegmentInfo(
-			timestampScale: timestampScale,
-			duration: duration,
-			muxingApp: muxingApp,
-			writingApp: writingApp,
-			title: title
-		)
-	}
-	
-	// MARK: - Segment Info Parsing
-	private func parseSegmentInfoAtom(header:any Atom,size: UInt64,childElements:inout [any Atom]) async throws -> MkvAtom_SegmentInfo 
+	private func parseSegmentInfo(header:any Atom,size: UInt64,childElements:inout [any Atom]) async throws -> MkvAtom_SegmentInfo 
 	{
 		//	it seems that making a data subscript/slice of another data which doesnt start at zero... crashes
 		//	starting at 0 with an offset, doesnt crash
@@ -1479,10 +1434,10 @@ struct MkvAtom_Segment : Atom, SpecialisedAtom
 	}
 	var trackMetaAtoms : [any Atom]
 	{
-		tracks.map
+		tracks.enumerated().map
 		{
-			trackMeta in
-			var trackInfo = InfoAtom(info: "Track", parent: self, uidOffset: 0)
+			trackIndex,trackMeta in
+			var trackInfo = InfoAtom(info: "Track", parent: self, uidOffset: trackIndex*10)
 			trackInfo.childAtoms = trackMeta.GetMetaAtoms(parent: trackInfo)
 			return trackInfo
 		}
