@@ -6,9 +6,9 @@ public protocol ByteReader
 	var globalPosition : UInt64	{get}
 	var bytesRemaining : UInt64	{get}
 	
-	mutating func SkipBytes(_ byteCount:Int) async throws
+	mutating func SkipBytes(_ byteCount:UInt64) async throws
 	mutating func PeekBytes(filePosition:UInt64,byteCount:UInt64) async throws -> Data
-	mutating func ReadBytes(_ byteCount:Int) async throws -> Data
+	mutating func ReadBytes(_ byteCount:UInt64) async throws -> Data
 	mutating func ReadBytes<TYPE>(to buffer:inout TYPE,reverse:Bool) async throws
 	mutating func ReadBytes<TYPE>(to buffer:inout Array<TYPE>) async throws
 	
@@ -28,7 +28,7 @@ extension ByteReader
 				return $0.count
 			}
 		}()
-		let data = try await self.ReadBytes(byteCount)
+		let data = try await self.ReadBytes(UInt64(byteCount))
 		withUnsafeMutableBytes(of: &buffer)
 		{
 			buffer in
@@ -54,7 +54,7 @@ extension ByteReader
 			bufferBuffer in
 			bufferBuffer.count * MemoryLayout<TYPE>.size
 		}
-		let data = try await self.ReadBytes(byteCount)
+		let data = try await self.ReadBytes(UInt64(byteCount))
 		buffer.withUnsafeMutableBufferPointer
 		{
 			bufferBuffer in
@@ -65,7 +65,7 @@ extension ByteReader
 	mutating public func ReadAs<TYPE>() async throws -> TYPE
 	{
 		let byteCount = MemoryLayout<TYPE>.stride
-		let bytes = try await ReadBytes(byteCount)
+		let bytes = try await ReadBytes(UInt64(byteCount))
 		let instance = bytes.withUnsafeBytes
 		{
 			return $0.load(as: TYPE.self)
@@ -174,13 +174,13 @@ extension ByteReader
 
 public class DataReader : ByteReader
 {
-	var position : Int
-	var globalStartPosition : Int	//	when reading nested data, this is the external offset
+	var position : UInt64
+	var globalStartPosition : UInt64	//	when reading nested data, this is the external offset
 	var data : Data
 	public var globalPosition : UInt64	{	UInt64(position + globalStartPosition)	}
-	public var bytesRemaining: UInt64	{	UInt64(data.count - position)	}
+	public var bytesRemaining: UInt64	{	UInt64(data.count) - position	}
 	
-	public init(data: Data,position:Int=0,globalStartPosition:Int=0) 
+	public init(data: Data,position:UInt64=0,globalStartPosition:UInt64=0) 
 	{
 		self.globalStartPosition = globalStartPosition
 		self.position = position
@@ -201,7 +201,7 @@ public class DataReader : ByteReader
 		let contentData = data[0..<sliceSize]
 		var content = DataReader(data: contentData,position: position,globalStartPosition:self.globalStartPosition)
 		//	now skip over it as we've "read" it into this other reader
-		try await self.SkipBytes(Int(byteCount))
+		try await self.SkipBytes(byteCount)
 		return content
 	}
 
@@ -211,7 +211,7 @@ public class DataReader : ByteReader
 		return read
 	}
 	
-	public func ReadBytes(_ byteCount: Int) async throws -> Data 
+	public func ReadBytes(_ byteCount: UInt64) async throws -> Data 
 	{
 		//	should this error?
 		if byteCount == 0
@@ -242,7 +242,7 @@ public class DataReader : ByteReader
 		return Data(read)
 	}
 	
-	public func SkipBytes(_ byteCount:Int) async throws 
+	public func SkipBytes(_ byteCount:UInt64) async throws 
 	{
 		let newPosition = position + byteCount
 		//	walking to the end is okay (hit EOF) - fail when reading AFTER the data

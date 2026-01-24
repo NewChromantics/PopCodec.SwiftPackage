@@ -147,7 +147,7 @@ public extension Atom
 		if !IsHeaderAtom()
 		{
 			print("skipping non header atom \(fourcc) x\(contentSize)")
-			try await content.SkipBytes(Int(contentSize))
+			try await content.SkipBytes(contentSize)
 			return []
 		}
 		
@@ -158,8 +158,8 @@ public extension Atom
 			throw BadDataError("Skipping decoding contents of \(fourcc) as invalid content size")
 		}
 		
-		let contentBytes = try await content.ReadBytes(Int(contentSize))
-		var contentReader = DataReader(data: contentBytes, globalStartPosition: Int(contentFilePosition))
+		let contentBytes = try await content.ReadBytes(contentSize)
+		var contentReader = DataReader(data: contentBytes, globalStartPosition: contentFilePosition)
 		
 		return try await AutoDecodeChildAtoms(content: &contentReader)
 	}

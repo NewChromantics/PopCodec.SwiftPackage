@@ -84,20 +84,20 @@ extension ByteReader
 }
 
 
-extension MkvTrackMeta
+extension MkvAtom_TrackMeta
 {
 	func GetEncoding() async -> TrackEncoding
 	{
-		switch self.metadata
+		switch self.trackType
 		{
-			case .audio(let meta):	
+			case .audio:	
 				return .Audio
 				
-			case .text(let meta):	
+			case .subtitle:	
 				return .Text
-			
-			case .video(let meta):
-				let codec = try? await GetVideoCodec(codecData: meta.codecPrivate)
+				
+			case .video:
+				let codec = try? await GetVideoCodec(codecData: codecPrivate)
 				return .Video(codec ?? MissingCodec())
 				
 			default:		
@@ -220,15 +220,14 @@ public class MkvVideoSource : VideoSource
 		var trackEncoding : [UInt64:TrackEncoding] = [:]
 		for track in trackAtoms
 		{
-			let encoding = await track.meta.GetEncoding()
-			trackEncoding[track.meta.uid] = encoding
+			let encoding = await track.GetEncoding()
+			trackEncoding[track.uid] = encoding
 		}
 		
 		
 		let trackMetas = trackAtoms.map
 		{
-			trackAtom in
-			let track = trackAtom.meta
+			track in
 			
 			let trackUid = track.name ?? "\(track.number)"////"\(track.uid)"
 			var duration = track.defaultDuration ?? 0 
@@ -591,7 +590,8 @@ enum MkvTrackType: UInt8 {
 }
 
 // MARK: - Video Track Metadata
-struct MkvVideoMeta {
+struct MkvVideoMeta 
+{
 	let pixelWidth: UInt64
 	let pixelHeight: UInt64
 	let displayWidth: UInt64?
@@ -612,40 +612,6 @@ struct MkvTextMeta {
 	// Add subtitle-specific metadata as needed
 }
 
-// MARK: - Track Metadata (Typed Enum)
-enum MkvTrackMetadata {
-	case video(MkvVideoMeta)
-	case audio(MkvAudioMeta)
-	case text(MkvTextMeta)
-	case other
-}
-
-// MARK: - Track Info
-struct MkvTrackMeta 
-{
-	let number: UInt64
-	let uid: UInt64
-	let codecID: String
-	let name: String?
-	let language: String?
-	let defaultDurationNano: UInt64?
-	var defaultDuration: Millisecond?	{	defaultDurationNano.map{ $0 / 1_000_000 }	}
-	let metadata: MkvTrackMetadata
-
-	private var defaultDurationString : String	{	defaultDuration.map{ "\($0)ms" } ?? "null"	}
-	
-	func GetMetaAtoms(parent:any Atom) -> [InfoAtom]
-	{
-		[
-			InfoAtom(info: "track number \(number)", parent: parent,uidOffset: 0),
-			InfoAtom(info: "uid \(uid)", parent: parent,uidOffset: 1),
-			InfoAtom(info: "codecID \(codecID)", parent: parent,uidOffset: 2),
-			InfoAtom(info: "name \(name ?? "null")", parent: parent,uidOffset: 3),
-			InfoAtom(info: "language \(language ?? "null")", parent: parent,uidOffset: 4),
-			InfoAtom(info: "defaultDuration \(defaultDurationString)", parent: parent,uidOffset: 5)
-		]
-	}
-}
 
 // MARK: - Segment Info
 struct SegmentInfo {
@@ -683,28 +649,7 @@ struct MkvCluster {
 		samples.sorted { $0.decodeTimestamp < $1.decodeTimestamp }
 	}
 }
-/*
-// MARK: - MKV Document
-struct MKVDocument 
-{
-	var meta : MkvDocumentMeta
-	//let segmentMeta : MkvAtom_SegmentInfo?
-	let tracks: [MkvAtom_TrackMeta]
-	let clusters: [MkvCluster]
-	
-	/// Returns all samples from all clusters sorted by decode order
-	func allSamplesByDecodeOrder() -> [MkvSample] {
-		clusters.flatMap { $0.samplesByDecodeOrder() }
-	}
-	
-	/// Returns samples for a specific track sorted by decode order
-	func samplesByDecodeOrder(forTrack trackNumber: UInt64) -> [MkvSample] {
-		clusters
-			.flatMap { $0.samplesByDecodeOrder() }
-			.filter { $0.trackNumber == trackNumber }
-	}
-}
-*/
+
 // MARK: - MKV Parser
 class MKVParser {
 	private let data: Data
@@ -729,7 +674,7 @@ class MKVParser {
 				
 		//	these should all be atoms
 		var segmentInfoAtom: MkvAtom_SegmentInfo?
-		var tracks: [MkvAtom_TrackMeta] = []
+		var trackListAtoms : [MkvAtom_TrackList] = []
 		var clusters: [MkvCluster] = []
 		
 		var segmentContent = try await fileReader.GetReaderForBytes(byteCount: segmentHeader.contentSize)
@@ -748,8 +693,8 @@ class MKVParser {
 					segmentInfoAtom = try await MkvAtom_SegmentInfo.Decode(header: element, content: &elementContent)
 					
 				case .tracks:
-					let parsedTracks = try parseTracks(size: element.contentSize, childElements: &children)
-					tracks.append(contentsOf: parsedTracks)
+					let trackListAtom = try await MkvAtom_TrackList.Decode(header: element, content: &elementContent)
+					trackListAtoms.append(trackListAtom)
 					
 				case .cluster:
 					guard let segmentInfo = segmentInfoAtom?.segmentInfo else
@@ -757,7 +702,8 @@ class MKVParser {
 						throw PopCodecError("Cannot parse cluster without segment info")
 					}
 					//	speed up track lookup
-					let trackMap = Dictionary(uniqueKeysWithValues: tracks.map{ ($0.meta.number, $0.meta) } )
+					let trackAtoms = trackListAtoms.flatMap{ $0.tracks }
+					let trackMap = Dictionary(uniqueKeysWithValues: trackAtoms.map{ ($0.number, $0) } )
 					let cluster = try parseCluster(size: element.contentSize, segmentInfo: segmentInfo, tracks:trackMap,childElements:&children) 
 					clusters.append(cluster)
 					
@@ -775,7 +721,7 @@ class MKVParser {
 		}
 		
 	
-		let segment = MkvAtom_Segment(header: segmentHeader, segmentInfo: segmentInfoAtom, tracks: tracks, clusters: clusters)
+		let segment = MkvAtom_Segment(header: segmentHeader, segmentInfo: segmentInfoAtom, trackLists: trackListAtoms, clusters: clusters)
 		return segment
 	}
 	
@@ -935,7 +881,7 @@ class MKVParser {
 		return Data(result)
 	}
 	
-	
+	/*
 	// MARK: - Tracks Parsing
 	private func parseTracks(size: UInt64,childElements:inout [any Atom]) throws -> [MkvAtom_TrackMeta] 
 	{
@@ -961,155 +907,10 @@ class MKVParser {
 		
 		return tracks
 	}
-	
-	private func parseTrackEntry(size: Int) throws -> MkvTrackMeta 
-	{
-		let endOffset = offset + size
-		
-		var number: UInt64 = 0
-		var uid: UInt64 = 0
-		var trackType: MkvTrackType = .video
-		var codecID = ""
-		var name: String?
-		var language: String?
-		var defaultDurationNano: UInt64?
-		var codecPrivate: Data?
-		var pixelWidth: UInt64?
-		var pixelHeight: UInt64?
-		var displayWidth: UInt64?
-		var displayHeight: UInt64?
-		var samplingFrequency: Double?
-		var channels: UInt64?
-		var bitDepth: UInt64?
-		
-		while offset < endOffset {
-			guard let elem = try? readElement() else { break }
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .trackNumber:
-					number = try readUInt(size: Int(elem.size))
-				case .trackUID:
-					uid = try readUInt(size: Int(elem.size))
-				case .trackType:
-					let type = try readUInt(size: Int(elem.size))
-					trackType = MkvTrackType(rawValue: UInt8(type)) ?? .video
-				case .codecID:
-					codecID = try readString(size: Int(elem.size))
-				case .codecPrivate:
-					codecPrivate = try readData(size: Int(elem.size))
-				case .name:
-					name = try readString(size: Int(elem.size))
-				case .language:
-					language = try readString(size: Int(elem.size))
-				case .defaultDuration:
-					defaultDurationNano = try readUInt(size: Int(elem.size))
-				case .video:
-					(pixelWidth, pixelHeight, displayWidth, displayHeight) = try parseVideo(size: Int(elem.size))
-				case .audio:
-					(samplingFrequency, channels, bitDepth) = try parseAudio(size: Int(elem.size))
-				default:
-					offset += Int(elem.size)
-			}
-		}
-		
-		// Build typed metadata based on track type
-		let metadata: MkvTrackMetadata
-		switch trackType {
-			case .video:
-				if let width = pixelWidth, let height = pixelHeight {
-					metadata = .video(MkvVideoMeta(
-						pixelWidth: width,
-						pixelHeight: height,
-						displayWidth: displayWidth,
-						displayHeight: displayHeight,
-						codecPrivate: codecPrivate
-					))
-				} else {
-					metadata = .other
-				}
-			case .audio:
-				if let freq = samplingFrequency, let ch = channels {
-					metadata = .audio(MkvAudioMeta(
-						samplingFrequency: freq,
-						channels: ch,
-						bitDepth: bitDepth,
-						codecPrivate: codecPrivate
-					))
-				} else {
-					metadata = .other
-				}
-			case .subtitle:
-				metadata = .text(MkvTextMeta())
-			default:
-				metadata = .other
-		}
-		
-		return MkvTrackMeta(
-			number: number,
-			uid: uid,
-			codecID: codecID,
-			name: name,
-			language: language,
-			defaultDurationNano: defaultDurationNano,
-			metadata: metadata
-		)
-	}
-	
-	private func parseVideo(size: Int) throws -> (UInt64?, UInt64?, UInt64?, UInt64?) {
-		let endOffset = offset + size
-		
-		var pixelWidth: UInt64?
-		var pixelHeight: UInt64?
-		var displayWidth: UInt64?
-		var displayHeight: UInt64?
-		
-		while offset < endOffset {
-			guard let elem = try? readElement() else { break }
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .pixelWidth:
-					pixelWidth = try readUInt(size: Int(elem.size))
-				case .pixelHeight:
-					pixelHeight = try readUInt(size: Int(elem.size))
-				case .displayWidth:
-					displayWidth = try readUInt(size: Int(elem.size))
-				case .displayHeight:
-					displayHeight = try readUInt(size: Int(elem.size))
-				default:
-					offset += Int(elem.size)
-			}
-		}
-		
-		return (pixelWidth, pixelHeight, displayWidth, displayHeight)
-	}
-	
-	private func parseAudio(size: Int) throws -> (Double?, UInt64?, UInt64?) {
-		let endOffset = offset + size
-		
-		var samplingFrequency: Double?
-		var channels: UInt64?
-		var bitDepth: UInt64?
-		
-		while offset < endOffset {
-			guard let elem = try? readElement() else { break }
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .samplingFrequency:
-					samplingFrequency = try readFloat(size: Int(elem.size))
-				case .channels:
-					channels = try readUInt(size: Int(elem.size))
-				case .bitDepth:
-					bitDepth = try readUInt(size: Int(elem.size))
-				default:
-					offset += Int(elem.size)
-			}
-		}
-		
-		return (samplingFrequency, channels, bitDepth)
-	}
+	*/
 	
 	// MARK: - Cluster Parsing
-	private func parseCluster(size: UInt64, segmentInfo: SegmentInfo?,tracks:[UInt64:MkvTrackMeta],childElements:inout [any Atom]) throws -> MkvCluster 
+	private func parseCluster(size: UInt64, segmentInfo: SegmentInfo?,tracks:[UInt64:MkvAtom_TrackMeta],childElements:inout [any Atom]) throws -> MkvCluster 
 	{
 		let endOffset = offset + Int(size)
 		let timestampScale = segmentInfo?.timestampScale ?? 1_000_000
@@ -1155,7 +956,7 @@ class MKVParser {
 		return MkvCluster(timestamp: clusterTimestamp, samples: samples)
 	}
 	
-	private func parseSimpleBlock(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvTrackMeta]) throws -> MkvSample {
+	private func parseSimpleBlock(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvAtom_TrackMeta]) throws -> MkvSample {
 		let startOffset = offset
 		let endOffset = offset + size
 		
@@ -1333,15 +1134,15 @@ extension ByteReader
 		
 		//	turn it into an atom
 		let contentsFilePosition = self.globalPosition
-		let contents = try await self.ReadBytes(Int(element.size))
-		var contentsReader = DataReader(data: contents, globalStartPosition: Int(contentsFilePosition))
+		let contents = try await self.ReadBytes(element.contentSize)
+		var contentsReader = DataReader(data: contents, globalStartPosition: contentsFilePosition)
 		let atom = try await MkvAtom_Ebml.Decode(header: element, content: &contentsReader)
 		return atom
 	}
 	
 	//	todo: rename this
 	//	mkv
-	mutating func readUInt(size: Int) async throws -> UInt64 
+	mutating func readUInt(size: UInt64) async throws -> UInt64 
 	{
 		var value: UInt64 = 0
 		for i in 0..<size 
@@ -1353,7 +1154,7 @@ extension ByteReader
 	}
 	
 	//	mkv
-	mutating func readString(size: Int) async throws -> String 
+	mutating func readString(size: UInt64) async throws -> String 
 	{
 		let stringBytes = try await self.ReadBytes(size)
 		guard let string = String(data: stringBytes, encoding: .utf8) else
@@ -1363,7 +1164,7 @@ extension ByteReader
 		return string
 	}
 	
-	mutating func readFloat(size: Int) async throws -> Double
+	mutating func readFloat(size: UInt64) async throws -> Double
 	{
 		if size == 4 
 		{
@@ -1410,13 +1211,13 @@ struct MkvAtom_Ebml : Atom, SpecialisedAtom
 			switch element.type
 			{
 				case .ebmlVersion:
-					meta.ebmlVersion = try await content.readUInt(size: Int(element.size))
+					meta.ebmlVersion = try await content.readUInt(size: element.contentSize)
 				case .docType:
-					meta.docType = try await content.readString(size: Int(element.size))
+					meta.docType = try await content.readString(size: element.contentSize)
 				case .docTypeVersion:
-					meta.docTypeVersion = try await content.readUInt(size: Int(element.size))
+					meta.docTypeVersion = try await content.readUInt(size: element.contentSize)
 				default:
-					try await content.SkipBytes(Int(element.size))
+					try await content.SkipBytes(element.contentSize)
 			}
 			
 			children.append(element)
@@ -1434,12 +1235,13 @@ struct MkvAtom_Segment : Atom, SpecialisedAtom
 	var header: any Atom
 	var childAtoms: [any Atom]?
 	{
-		([segmentInfo] + tracks).compactMap{$0}
+		([segmentInfo] + trackLists).compactMap{$0}
 	}
 
 	//	really should just have this meta as atoms
 	var segmentInfo : MkvAtom_SegmentInfo?
-	var tracks : [MkvAtom_TrackMeta]
+	var trackLists : [MkvAtom_TrackList]
+	var tracks : [MkvAtom_TrackMeta]	{	trackLists.flatMap{ $0.tracks }	}
 	var clusters : [MkvCluster]
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
@@ -1478,17 +1280,17 @@ struct MkvAtom_SegmentInfo : Atom, SpecialisedAtom
 			switch element.type
 			{
 				case .timestampScale:
-					timestampScale = try await content.readUInt(size: Int(element.contentSize))
+					timestampScale = try await content.readUInt(size: element.contentSize)
 				case .duration:
-					duration = try await content.readFloat(size: Int(element.contentSize))
+					duration = try await content.readFloat(size: element.contentSize)
 				case .muxingApp:
-					muxingApp = try await content.readString(size: Int(element.contentSize))
+					muxingApp = try await content.readString(size: element.contentSize)
 				case .writingApp:
-					writingApp = try await content.readString(size: Int(element.contentSize))
+					writingApp = try await content.readString(size: element.contentSize)
 				case .title:
-					title = try await content.readString(size: Int(element.contentSize))
+					title = try await content.readString(size: element.contentSize)
 				default:
-					try await content.SkipBytes(Int(element.contentSize))
+					try await content.SkipBytes(element.contentSize)
 			}
 		}
 		
@@ -1504,6 +1306,44 @@ struct MkvAtom_SegmentInfo : Atom, SpecialisedAtom
 }
 
 
+
+
+struct MkvAtom_TrackList : Atom, SpecialisedAtom
+{
+	static var fourcc = EBMLElementID.tracks.fourcc
+	
+	var header: any Atom
+	var childAtoms: [any Atom]?
+	var tracks : [MkvAtom_TrackMeta]
+	{
+		childAtoms?.compactMap{ $0 as? MkvAtom_TrackMeta } ?? []
+	}
+	
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
+	{
+		var children : [any Atom] = []
+		//	ready all children
+		while content.bytesRemaining > 0
+		{
+			var element = try await content.ReadEbmlElementHeader()
+			
+			var elementContent = try await content.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
+			
+			if element.type == .trackEntry 
+			{
+				let track = try await MkvAtom_TrackMeta.Decode(header: element, content: &elementContent)
+				children.append(track)
+			}
+			else
+			{
+				children.append(element)
+			}
+		}
+		return Self(header: header, childAtoms: children)
+	}
+}
+
+
 struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 {
 	static var fourcc = EBMLElementID.trackEntry.fourcc
@@ -1511,14 +1351,171 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 	var header: any Atom
 	var childAtoms: [any Atom]?
 	{
-		meta.GetMetaAtoms(parent: self)
+		children + GetMetaAtoms(parent: self)
+	}
+
+	var children : [any Atom]
+	
+
+	var number : UInt64
+	var uid : UInt64
+	var codecID : String?
+	var name : String?
+	var language: String?
+	var defaultDurationNano: UInt64?
+	var defaultDuration : Millisecond?	{	defaultDurationNano.map{ $0 / 1_000_000 }	}
+	private var defaultDurationString : String	{	defaultDuration.map{ "\($0)ms" } ?? "null"	}
+	var codecPrivate: Data?
+	var audioMeta : MkvAtom_CodecMetaAudio?
+	var videoMeta : MkvAtom_CodecMetaVideo?
+	var trackTypeValue : UInt8?
+	//	should default to video?
+	var trackType : MkvTrackType?	{	trackTypeValue.map{ MkvTrackType(rawValue: $0) } ?? nil	}
+	
+	func GetMetaAtoms(parent:any Atom) -> [InfoAtom]
+	{
+		[
+			InfoAtom(info: "track number \(number)", parent: parent,uidOffset: 0),
+			InfoAtom(info: "uid \(uid)", parent: parent,uidOffset: 1),
+			InfoAtom(info: "codecID \(codecID)", parent: parent,uidOffset: 2),
+			InfoAtom(info: "name \(name ?? "null")", parent: parent,uidOffset: 3),
+			InfoAtom(info: "language \(language ?? "null")", parent: parent,uidOffset: 4),
+			InfoAtom(info: "defaultDuration \(defaultDurationString)", parent: parent,uidOffset: 5)
+		]
 	}
 	
-	//	really should just have this meta as atoms
-	var meta : MkvTrackMeta
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
-		throw PopCodecError("todo")
+		var number: UInt64 = 0
+		var uid: UInt64 = 0
+		var trackType : UInt8?
+		var codecID = ""
+		var name: String?
+		var language: String?
+		var defaultDurationNano: UInt64?
+		var codecPrivate: Data?
+		var audioMeta : MkvAtom_CodecMetaAudio?
+		var videoMeta : MkvAtom_CodecMetaVideo?
+		var children : [any Atom] = []
+		
+		while content.bytesRemaining > 0
+		{
+			let element = try await content.ReadEbmlElementHeader()
+			children.append(element)
+			
+			switch element.type
+			{
+				case .trackNumber:
+					number = try await content.readUInt(size: element.contentSize)
+				case .trackUID:
+					uid = try await content.readUInt(size: element.contentSize)
+				case .trackType:
+					let value = try await content.readUInt(size: element.contentSize)
+					trackType = UInt8(value)
+					
+				case .codecID:
+					codecID = try await content.readString(size: element.contentSize)
+				case .codecPrivate:
+					codecPrivate = try await content.ReadBytes(element.contentSize)
+				case .name:
+					name = try await content.readString(size: element.contentSize)
+				case .language:
+					language = try await content.readString(size: element.contentSize)
+				case .defaultDuration:
+					defaultDurationNano = try await content.readUInt(size: element.contentSize)
+				case .video:
+					var videoContent = try await content.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
+					videoMeta = try await MkvAtom_CodecMetaVideo.Decode(header: element, content: &videoContent)
+				case .audio:
+					var audioContent = try await content.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
+					audioMeta = try await MkvAtom_CodecMetaAudio.Decode(header: element, content: &audioContent)
+				default:
+					try await content.SkipBytes(element.contentSize)
+			}
+		}
+		
+		return Self(header: header,children: children, number: number, uid:uid, codecID: codecID, codecPrivate: codecPrivate, trackTypeValue:trackType)
+	}
+}
+
+struct MkvAtom_CodecMetaVideo : Atom, SpecialisedAtom
+{
+	static var fourcc = EBMLElementID.video.fourcc
+	
+	var header: any Atom
+	var childAtoms: [any Atom]?
+
+	var pixelWidth: UInt64?
+	var pixelHeight: UInt64?
+	var displayWidth: UInt64?
+	var displayHeight: UInt64?
+	
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
+	{
+		var pixelWidth: UInt64?
+		var pixelHeight: UInt64?
+		var displayWidth: UInt64?
+		var displayHeight: UInt64?
+		var childAtoms: [any Atom] = []
+
+		while content.bytesRemaining > 0
+		{
+			var element = try await content.ReadEbmlElementHeader()
+			childAtoms.append(element)
+			
+			switch element.type
+			{
+				case .pixelWidth:			pixelWidth = try await content.readUInt(size: element.size)
+				case .pixelHeight:			pixelHeight = try await content.readUInt(size: element.size)
+				case .displayWidth:			displayWidth = try await content.readUInt(size: element.size)
+				case .displayHeight:		displayHeight = try await content.readUInt(size: element.size)
+					
+				default:
+					try await content.SkipBytes(element.contentSize)
+			}
+		}
+		
+		return Self(header: header,childAtoms: childAtoms)
+	}
+}
+
+
+struct MkvAtom_CodecMetaAudio : Atom, SpecialisedAtom
+{
+	static var fourcc = EBMLElementID.audio.fourcc
+	
+	var header: any Atom
+	var childAtoms: [any Atom]?
+
+	//	todo: show these as info atoms	
+	var samplingFrequency: Double?
+	var channels: UInt64?
+	var bitDepth: UInt64?
+	
+	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
+	{
+		var samplingFrequency: Double?
+		var channels: UInt64?
+		var bitDepth: UInt64?
+		var childAtoms: [any Atom] = []
+		
+		while content.bytesRemaining > 0
+		{
+			var element = try await content.ReadEbmlElementHeader()
+			childAtoms.append(element)
+			
+			switch element.type
+			{
+				case .samplingFrequency:	samplingFrequency = try await content.readFloat(size: element.size)
+				case .channels:				channels = try await content.readUInt(size: element.size)
+				case .bitDepth:				bitDepth = try await content.readUInt(size: element.size)
+					
+				default:
+					try await content.SkipBytes(element.contentSize)
+			}
+		}
+		
+		return Self(header: header,childAtoms: childAtoms, samplingFrequency: samplingFrequency, channels: channels, bitDepth: bitDepth)
 	}
 }

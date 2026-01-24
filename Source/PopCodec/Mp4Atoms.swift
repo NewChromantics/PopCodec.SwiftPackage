@@ -58,8 +58,8 @@ class Mp4AtomFactory
 			return nil
 		}
 		
-		let contentBytes = try await content.ReadBytes(Int(header.contentSize))
-		var contentReader = DataReader(data: contentBytes, globalStartPosition: Int(header.contentFilePosition))
+		let contentBytes = try await content.ReadBytes(header.contentSize)
+		var contentReader = DataReader(data: contentBytes, globalStartPosition: header.contentFilePosition)
 		
 		let atom = try await type.Decode(header: header, content: &contentReader)
 		return atom
@@ -290,7 +290,7 @@ struct Atom_avcc : Atom, SpecialisedAtom
 		for _ in 0..<SpsCount
 		{
 			let SpsLength = try await content.Read16();
-			let sps = try await content.ReadBytes(Int(SpsLength) )
+			let sps = try await content.ReadBytes(UInt64(SpsLength))
 			h264.sps.append( Array(sps) )
 		}
 		
@@ -298,7 +298,7 @@ struct Atom_avcc : Atom, SpecialisedAtom
 		for _ in 0..<PpsCount
 		{
 			let PpsLength = try await content.Read16()
-			let pps = try await content.ReadBytes(Int(PpsLength) )
+			let pps = try await content.ReadBytes(UInt64(PpsLength) )
 			h264.pps.append( Array(pps) )
 		}
 		
@@ -387,7 +387,7 @@ struct VideoCodecMeta
 		self.dataAfterChildAtoms = []
 		if data.bytesRemaining > 0
 		{
-			self.dataAfterChildAtoms = Array(try await data.ReadBytes(Int(data.bytesRemaining)))
+			self.dataAfterChildAtoms = Array(try await data.ReadBytes(data.bytesRemaining))
 		}
 	}
 	
@@ -534,7 +534,7 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 				let naluContentSize = try await content.Read16()
 				let naluTotalSize = Int(naluContentSize) + hvccNaluLengthSize
 				let naluPosition = content.globalPosition
-				let nalBytes = try await content.ReadBytes(naluTotalSize - 2)	//	- content size we already read
+				let nalBytes = try await content.ReadBytes(UInt64(naluTotalSize - 2))	//	- content size we already read
 				//metaAtoms.append( InfoAtom(info: "Packet(\(packetType)) #\(packetIndex) Nalu #\(naluIndex)/\(naluCount) size=\(naluTotalSize)", parent: header, filePosition: naluPosition, totalSize: UInt64(naluTotalSize)) )
 
 				let nalu = HevcNalu(contentSize: naluContentSize, dataWithoutLengthPrefix: Array(nalBytes), filePosition: naluPosition)
@@ -557,7 +557,7 @@ struct Atom_hvcc : Atom, SpecialisedAtom
 		if content.bytesRemaining > 0
 		{
 			let unreadPosition = content.globalPosition
-			let bytes = try await content.ReadBytes(Int(content.bytesRemaining))
+			let bytes = try await content.ReadBytes(UInt64(content.bytesRemaining))
 			metaAtoms.append( InfoAtom(info: "Unread bytes=\(bytes.count)", filePosition: unreadPosition, totalSize: UInt64(bytes.count)))
 		}
 		
@@ -756,7 +756,7 @@ struct Atom_text : Atom, SpecialisedAtom
 		let meta : TextTrackMeta = try await content.ReadAs()
 
 		let stringLength = try await content.Read8()
-		let stringChars = try await content.ReadBytes(Int(stringLength))
+		let stringChars = try await content.ReadBytes(UInt64(stringLength))
 		let string = String(bytes: stringChars, encoding: .ascii) ?? "Failed to parse ascii string"
 
 		let unreadBytes = Int(content.bytesRemaining)
