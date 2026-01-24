@@ -210,7 +210,7 @@ public class MkvVideoSource : VideoSource
 			throw PopCodecError("No track atoms")
 		}
 		
-		var clusterAtoms : [MkvCluster] = segmentAtom.clusters
+		var clusterAtoms : [MkvAtom_Cluster] = segmentAtom.clusters
 		guard !clusterAtoms.isEmpty else
 		{
 			throw PopCodecError("No cluster atoms")
@@ -632,6 +632,8 @@ struct MkvSample {
 	let size: Int         // Size of sample data in bytes
 	var duration: UInt64? // In track time scale units
 	
+	var decodeTime : Millisecond	{	sampleIndexInTrack * 
+	
 	/// Read the sample data from the original Data object
 	func readData(from data: Data) -> Data? {
 		guard fileOffset + size <= data.count else { return nil }
@@ -639,16 +641,6 @@ struct MkvSample {
 	}
 }
 
-// MARK: - Cluster
-struct MkvCluster {
-	let timestamp: UInt64
-	let samples: [MkvSample]
-	
-	/// Returns samples sorted by decode timestamp for proper decoding
-	func samplesByDecodeOrder() -> [MkvSample] {
-		samples.sorted { $0.decodeTimestamp < $1.decodeTimestamp }
-	}
-}
 
 // MARK: - MKV Parser
 class MKVParser {
@@ -675,7 +667,7 @@ class MKVParser {
 		//	these should all be atoms
 		var segmentInfoAtom: MkvAtom_SegmentInfo?
 		var trackListAtoms : [MkvAtom_TrackList] = []
-		var clusters: [MkvCluster] = []
+		var clusters: [MkvAtom_Cluster] = []
 		
 		var segmentContent = try await fileReader.GetReaderForBytes(byteCount: segmentHeader.contentSize)
 			
@@ -703,9 +695,8 @@ class MKVParser {
 					}
 					//	speed up track lookup
 					let trackAtoms = trackListAtoms.flatMap{ $0.tracks }
-					let trackMap = Dictionary(uniqueKeysWithValues: trackAtoms.map{ ($0.number, $0) } )
-					let cluster = try parseCluster(size: element.contentSize, segmentInfo: segmentInfo, tracks:trackMap,childElements:&children) 
-					clusters.append(cluster)
+					let clusterAtom = try await MkvAtom_Cluster.Decode(segmentInfo: segmentInfoAtom, trackAtoms: trackAtoms, header: element, content: &elementContent)
+					clusters.append(clusterAtom)
 					
 				default:
 					//try await segmentContent.SkipBytes(Int(element.contentSize))
@@ -881,220 +872,8 @@ class MKVParser {
 		return Data(result)
 	}
 	
-	/*
-	// MARK: - Tracks Parsing
-	private func parseTracks(size: UInt64,childElements:inout [any Atom]) throws -> [MkvAtom_TrackMeta] 
-	{
-		let endOffset = offset + Int(size)
-		var tracks: [MkvAtom_TrackMeta] = []
-		
-		while offset < endOffset 
-		{
-			let elem = try readElement()
-			childElements.append(elem)
-			
-			if elem.type == .trackEntry 
-			{
-				let track = try parseTrackEntry(size: Int(elem.size))
-				let trackAtom = MkvAtom_TrackMeta(header: elem, meta: track)
-				tracks.append(trackAtom)
-			}
-			else 
-			{
-				offset += Int(elem.size)
-			}
-		}
-		
-		return tracks
-	}
-	*/
 	
-	// MARK: - Cluster Parsing
-	private func parseCluster(size: UInt64, segmentInfo: SegmentInfo?,tracks:[UInt64:MkvAtom_TrackMeta],childElements:inout [any Atom]) throws -> MkvCluster 
-	{
-		let endOffset = offset + Int(size)
-		let timestampScale = segmentInfo?.timestampScale ?? 1_000_000
-		
-		var clusterTimestamp: UInt64 = 0
-		var samples: [MkvSample] = []
-		
-		while offset < endOffset {
-			guard let elem = try? readElement() else { break }
-			
-			childElements.append(elem)
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .timestamp:
-					clusterTimestamp = try readUInt(size: Int(elem.size))
-				case .simpleBlock:
-					var sample = try parseSimpleBlock(
-						size: Int(elem.size),
-						clusterTimestamp: clusterTimestamp,
-						timestampScale: timestampScale,
-						trackMetas:tracks
-					)
-					samples.append(sample)
-
-				case .blockGroup:
-					let sample = try parseBlockGroup(
-						size: Int(elem.size),
-						clusterTimestamp: clusterTimestamp,
-						timestampScale: timestampScale
-					)
-					if sample.duration == nil
-					{
-						print("Block sample missing duration")
-					}
-					samples.append(sample)
-					
-				default:
-					print("Unknown element \(elem.fourcc) x\(elem.contentSize)")
-					offset += Int(elem.size)
-			}
-		}
-		
-		return MkvCluster(timestamp: clusterTimestamp, samples: samples)
-	}
 	
-	private func parseSimpleBlock(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvAtom_TrackMeta]) throws -> MkvSample {
-		let startOffset = offset
-		let endOffset = offset + size
-		
-		// Read track number (variable-length)
-		let trackNumber = try readVIntSize()
-		
-		// Read timestamp (2 bytes, signed)
-		guard offset + 2 <= data.count else {
-			throw MKVError.endOfData
-		}
-		let timestampBytes = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
-		let relativeTimestamp = Int16(bitPattern: timestampBytes)
-		offset += 2
-		
-		// Read flags
-		guard offset < data.count else {
-			throw MKVError.endOfData
-		}
-		let flags = data[offset]
-		offset += 1
-		
-		let isKeyframe = (flags & 0x80) != 0
-		
-		// Calculate frame data location
-		let frameDataOffset = offset
-		let dataSize = endOffset - offset
-		guard frameDataOffset + dataSize <= data.count else {
-			throw MKVError.endOfData
-		}
-		
-		// Skip over the data (don't copy it)
-		offset += dataSize
-		
-		// Calculate absolute timestamp in milliseconds
-		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
-		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
-		
-		// Assign decode timestamp (in file order)
-		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
-
-		//	read default duration
-		var duration : UInt64? = nil
-		if let trackMeta = trackMetas[trackNumber]
-		{
-			duration = trackMeta.defaultDuration
-		}
-		
-		return MkvSample(
-			trackNumber: trackNumber,
-			timestamp: timestampMs,
-			decodeTimestamp: decodeTimestamp,
-			isKeyframe: isKeyframe,
-			fileOffset: frameDataOffset,
-			size: dataSize,
-			duration: duration
-		)
-	}
-	
-	private func parseBlockGroup(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64) throws -> MkvSample {
-		let endOffset = offset + size
-		
-		var frameDataOffset: Int = 0
-		var frameDataSize: Int = 0
-		var trackNumber: UInt64 = 0
-		var relativeTimestamp: Int16 = 0
-		var isKeyframe = true
-		var duration: UInt64?
-		
-		while offset < endOffset {
-			guard let elem = try? readElement() else { break }
-			
-			switch EBMLElementID(rawValue: elem.id) {
-				case .block:
-					let blockStartOffset = offset
-					
-					// Read track number
-					trackNumber = try readVIntSize()
-					
-					// Read timestamp
-					guard offset + 2 <= data.count else {
-						throw MKVError.endOfData
-					}
-					let timestampBytes = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
-					relativeTimestamp = Int16(bitPattern: timestampBytes)
-					offset += 2
-					
-					// Read flags
-					guard offset < data.count else {
-						throw MKVError.endOfData
-					}
-					let flags = data[offset]
-					offset += 1
-					
-					isKeyframe = (flags & 0x80) != 0
-					
-					// Calculate frame data location
-					frameDataOffset = offset
-					let remainingSize = Int(elem.size) - (offset - blockStartOffset)
-					guard offset + remainingSize <= data.count else {
-						throw MKVError.endOfData
-					}
-					
-					frameDataSize = remainingSize
-					offset += remainingSize
-					
-				case .blockDuration:
-					duration = try readUInt(size: Int(elem.size))
-					
-				case .referenceBlock:
-					isKeyframe = false
-					offset += Int(elem.size)
-					
-				default:
-					offset += Int(elem.size)
-			}
-		}
-		
-		guard frameDataSize > 0 else {
-			throw MKVError.missingBlockData
-		}
-		
-		// Calculate absolute timestamp in milliseconds
-		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
-		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
-		
-		// Assign decode timestamp (in file order)
-		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
-		
-		return MkvSample(
-			trackNumber: trackNumber,
-			timestamp: timestampMs,
-			decodeTimestamp: decodeTimestamp,
-			isKeyframe: isKeyframe,
-			fileOffset: frameDataOffset,
-			size: frameDataSize,
-			duration: duration
-		)
-	}
 	
 	// MARK: - Decode Timestamp Assignment
 	private func assignDecodeTimestamp(trackNumber: UInt64, timestampScale: Int64) -> Int64 {
@@ -1242,7 +1021,7 @@ struct MkvAtom_Segment : Atom, SpecialisedAtom
 	var segmentInfo : MkvAtom_SegmentInfo?
 	var trackLists : [MkvAtom_TrackList]
 	var tracks : [MkvAtom_TrackMeta]	{	trackLists.flatMap{ $0.tracks }	}
-	var clusters : [MkvCluster]
+	var clusters : [MkvAtom_Cluster]
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
@@ -1517,5 +1296,207 @@ struct MkvAtom_CodecMetaAudio : Atom, SpecialisedAtom
 		}
 		
 		return Self(header: header,childAtoms: childAtoms, samplingFrequency: samplingFrequency, channels: channels, bitDepth: bitDepth)
+	}
+}
+
+
+struct MkvAtom_Cluster
+{
+	let timestamp : UInt64
+	let samples: [MkvSample]
+	
+	/// Returns samples sorted by decode timestamp for proper decoding
+	func samplesByDecodeOrder() -> [MkvSample] {
+		samples.sorted { $0.decodeTimestamp < $1.decodeTimestamp }
+	}
+	
+	
+	static private func parseSimpleBlock(content:inout DataReader, clusterTimestamp: UInt64, timestampScale: UInt64,trackMetas:[UInt64:MkvAtom_TrackMeta]) async throws -> MkvSample 
+	{
+		// Read track number (variable-length)
+		let trackNumber = try await content.readVIntSize()
+
+			/*
+		// Read timestamp (2 bytes, signed)
+		let timestampBytes = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
+		let relativeTimestamp = Int16(bitPattern: timestampBytes)
+			 offset += 2
+			 */
+		let timestampBytes = try await content.Read16()
+		let relativeTimestamp = Int16(bitPattern: timestampBytes)
+		
+		let flags = try await content.Read8()
+		let isKeyframe = (flags & 0x80) != 0
+		
+		/* Calculate frame data location
+		let frameDataOffset = offset
+		let dataSize = endOffset - offset
+		guard frameDataOffset + dataSize <= data.count else {
+			throw MKVError.endOfData
+		}
+		*/
+		let frameDataOffset = content.globalPosition
+		let dataSize = content.bytesRemaining
+		
+		// Skip over the data (don't copy it)
+		//offset += dataSize
+		try await content.SkipBytes(dataSize)
+		
+		// Calculate absolute timestamp in milliseconds
+		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
+		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
+		
+		// Assign decode timestamp (in file order)
+		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
+		
+		//	read default duration
+		var duration : UInt64? = nil
+		if let trackMeta = trackMetas[trackNumber]
+		{
+			duration = trackMeta.defaultDuration
+		}
+		
+		return MkvSample(
+			trackNumber: trackNumber,
+			timestamp: timestampMs,
+			decodeTimestamp: decodeTimestamp,
+			isKeyframe: isKeyframe,
+			fileOffset: frameDataOffset,
+			size: dataSize,
+			duration: duration
+		)
+	}
+	
+	
+	static func parseBlockGroup(size: Int, clusterTimestamp: UInt64, timestampScale: UInt64) async throws -> MkvSample 
+	{
+		let endOffset = offset + size
+		
+		var frameDataOffset: Int = 0
+		var frameDataSize: Int = 0
+		var trackNumber: UInt64 = 0
+		var relativeTimestamp: Int16 = 0
+		var isKeyframe = true
+		var duration: UInt64?
+		
+		while offset < endOffset {
+			guard let elem = try? readElement() else { break }
+			
+			switch EBMLElementID(rawValue: elem.id) {
+				case .block:
+					let blockStartOffset = offset
+					
+					// Read track number
+					trackNumber = try readVIntSize()
+					
+					// Read timestamp
+					guard offset + 2 <= data.count else {
+						throw MKVError.endOfData
+					}
+					let timestampBytes = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
+					relativeTimestamp = Int16(bitPattern: timestampBytes)
+					offset += 2
+					
+					// Read flags
+					guard offset < data.count else {
+						throw MKVError.endOfData
+					}
+					let flags = data[offset]
+					offset += 1
+					
+					isKeyframe = (flags & 0x80) != 0
+					
+					// Calculate frame data location
+					frameDataOffset = offset
+					let remainingSize = Int(elem.size) - (offset - blockStartOffset)
+					guard offset + remainingSize <= data.count else {
+						throw MKVError.endOfData
+					}
+					
+					frameDataSize = remainingSize
+					offset += remainingSize
+					
+				case .blockDuration:
+					duration = try readUInt(size: Int(elem.size))
+					
+				case .referenceBlock:
+					isKeyframe = false
+					offset += Int(elem.size)
+					
+				default:
+					offset += Int(elem.size)
+			}
+		}
+		
+		guard frameDataSize > 0 else {
+			throw MKVError.missingBlockData
+		}
+		
+		// Calculate absolute timestamp in milliseconds
+		let absoluteTimestamp = Int64(clusterTimestamp) + Int64(relativeTimestamp)
+		let timestampMs = (absoluteTimestamp * Int64(timestampScale)) / 1_000_000
+		
+		// Assign decode timestamp (in file order)
+		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
+		
+		return MkvSample(
+			trackNumber: trackNumber,
+			timestamp: timestampMs,
+			decodeTimestamp: decodeTimestamp,
+			isKeyframe: isKeyframe,
+			fileOffset: frameDataOffset,
+			size: frameDataSize,
+			duration: duration
+		)
+	}
+	
+	static func Decode(segmentInfo:SegmentInfo?,trackAtoms:[MkvAtom_TrackMeta],header:any Atom,content:inout DataReader) async throws -> MkvAtom_Cluster
+	{
+		let trackMap = Dictionary(uniqueKeysWithValues: trackAtoms.map{ ($0.number, $0) } )
+		
+		let timestampScale = segmentInfo?.timestampScale ?? 1_000_000
+		
+		var clusterTimestamp: UInt64 = 0
+		var samples: [MkvSample] = []
+		var childElements : [any Atom] = []
+		
+		while content.bytesRemaining > 0
+		{
+			var element = try await content.ReadEbmlElementHeader()
+			
+			childElements.append(element)
+			var elementContent = try await content.GetReaderForBytes(byteCount: element.contentSize)
+			
+			switch element.type
+			{
+				case .timestamp:
+					clusterTimestamp = try await elementContent.readUInt(size:element.contentSize)
+					
+				case .simpleBlock:
+					var sample = try parseSimpleBlock(&elementContent,
+													  clusterTimestamp: clusterTimestamp,
+													  timestampScale: timestampScale,
+													  trackMetas:tracks
+					)
+					samples.append(sample)
+					
+				case .blockGroup:
+					let sample = try parseBlockGroup(
+						&elementContent,
+						clusterTimestamp: clusterTimestamp,
+						timestampScale: timestampScale
+					)
+					if sample.duration == nil
+					{
+						print("Block sample missing duration")
+					}
+					samples.append(sample)
+					
+				default:
+					print("Unknown element \(element.fourcc) x\(element.contentSize)")
+			}
+		}
+		
+		return MkvAtom_Cluster(timestamp: clusterTimestamp, samples: samples)
 	}
 }
