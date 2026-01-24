@@ -27,65 +27,11 @@ func ReadMp4Header(reader:inout DataReader,onFoundAtom:(Atom)async throws->Void)
 	}
 	throw PopCodecError("ReadMp4Header aborted after \(safetyLimit) iterations")
 }
-/*
-import Foundation
-
-/// Read text file line by line in efficient way
-public class LineReader {
-	public let path: String
-	
-	fileprivate let file: UnsafeMutablePointer<FILE>!
-	
-	init?(path: String) {
-		self.path = path
-		file = fopen(path, "r")
-		guard file != nil else { return nil }
-	}
-	
-	public var nextLine: String? {
-		var line: UnsafeMutablePointer<CChar>?
-		var linecap: Int = 0
-		defer { free(line) }
-		return getline(&line, &linecap, file) > 0 ? String(cString: line!) : nil
-	}
-	
-	deinit {
-		fclose(file)
-	}
-}
-
-extension LineReader: Sequence {
-	public func makeIterator() -> AnyIterator<String> {
-		return AnyIterator<String> {
-			return self.nextLine
-		}
-	}
-}
-*/
 
 struct Mp4Header
 {
 	var atoms : [any Atom] = []
 	var tracks : [TrackMeta] = []
-	
-	
-	func ExtractTracks() throws -> [TrackMeta]
-	{
-		let moov = try GetAtom(fourcc: Fourcc("moov"))
-		let traks = moov.childAtoms?.compactMap{ $0 as? Atom_trak } ?? []
-		return traks.enumerated().map
-		{
-			trackIndex,trackAtom in
-			let samples = trackAtom.samplesInPresentationOrder
-			let firstTime = samples.first.map{Millisecond($0.presentationTime)}
-			let lastTime = samples.last.map{Millisecond($0.presentationTime)}
-			let duration = lastTime.map{ $0 - (firstTime ?? 0) } ?? 0
-			
-			//	mp4 tracks start at number 1, but this is really just an arbritrary id
-			let trackId = "\(trackIndex+1)"
-			return TrackMeta(id: trackId, startTime:firstTime, duration:duration, encoding: trackAtom.encoding, samples: samples)
-		}
-	}
 	
 	func GetAtom(fourcc:Fourcc) throws -> any Atom
 	{
@@ -97,13 +43,16 @@ struct Mp4Header
 	}
 }
 
-public class Mp4VideoSource : VideoSource
+public class Mp4VideoSource : VideoSource, ObservableObject
 {
 	public var typeName: String	{"Mpeg"}
-	public var defaultSelectedTrack: TrackUid? = nil
 	
 	var url : URL
+	
+	//	need to remove this, esp for chunked mp4s
 	var readHeaderTask : Task<Mp4Header,Error>!	//	promise
+	
+	@Published var trackSampleManagers : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	required public init(url:URL)
 	{
@@ -127,10 +76,24 @@ public class Mp4VideoSource : VideoSource
 		}
 		
 		//	pull tracks out of atoms
-		let tracks = try header.ExtractTracks()
-		header.tracks = tracks
-		
-		defaultSelectedTrack = tracks.first{$0.encoding.isVideo}?.id
+		let moov = try header.GetAtom(fourcc: Fourcc("moov"))
+		let traks = moov.childAtoms?.compactMap{ $0 as? Atom_trak } ?? []
+		for (trackIndex,trackAtom) in traks.enumerated()
+		{
+			let samples = trackAtom.samplesInPresentationOrder
+			let firstTime = samples.first.map{Millisecond($0.presentationTime)}
+			let lastTime = samples.last.map{Millisecond($0.presentationTime)}
+			let duration = lastTime.map{ $0 - (firstTime ?? 0) } ?? 0
+				
+			//	mp4 tracks start at number 1, but this is really just an arbritrary id
+			let trackId = "\(trackIndex+1)"
+			
+			let trackMeta = TrackMeta(id: trackId, startTime:firstTime, duration:duration, encoding: trackAtom.encoding)
+			let trackSamples = Mp4TrackSampleManager(samples: samples)
+			
+			header.tracks.append(trackMeta)
+			trackSampleManagers[trackMeta.id] = trackSamples
+		}
 		
 		return header
 	}
@@ -140,6 +103,17 @@ public class Mp4VideoSource : VideoSource
 		let header = try await readHeaderTask.value
 		return header.tracks
 	}
+	
+	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager
+	{
+		let samples = trackSampleManagers[track]
+		guard let samples else
+		{
+			throw PopCodecError("No track sample manager for \(track)")
+		}
+		return samples
+	}
+	
 	
 	public func GetAtoms() async throws -> [any Atom] 
 	{
@@ -188,11 +162,11 @@ public class Mp4VideoSource : VideoSource
 	
 	func GetFrameSample(frame:TrackAndTime,keyframe:Bool) async throws -> Mp4Sample
 	{
-		let track = try await GetTrackMeta(trackUid: frame.track)
+		let track = try await GetTrackSampleManager(track: frame.track)
 		return try await GetFrameSample(track: track, presentationTime: frame.time, keyframe:keyframe)
 	}
 	
-	func GetFrameSample(track:TrackMeta,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4Sample
+	func GetFrameSample(track:TrackSampleManager,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4Sample
 	{
 		guard let sample = track.GetSampleLessOrEqualToTime(presentationTime, keyframe: keyframe) else
 		{
@@ -201,7 +175,7 @@ public class Mp4VideoSource : VideoSource
 		return sample
 	}
 	
-	func GetFrameSampleAndDependencies(track:TrackMeta,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4SampleAndDependencies
+	func GetFrameSampleAndDependencies(track:TrackSampleManager,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4SampleAndDependencies
 	{
 		//	todo: need to also get samples ahead of this for B-frames! need to start probing the h264 data
 		guard let sampleIndex = track.GetSampleIndexLessOrEqualToTime(presentationTime, keyframe: keyframe) else
@@ -259,7 +233,8 @@ public class Mp4VideoSource : VideoSource
 		{
 			func GetFrameSampleAndDependencies(presentationTime:Millisecond) async throws -> Mp4SampleAndDependencies
 			{
-				return try await self.GetFrameSampleAndDependencies(track: track, presentationTime: presentationTime,keyframe: false)
+				let trackSampleManager = try await GetTrackSampleManager(track: track.id)
+				return try await self.GetFrameSampleAndDependencies(track: trackSampleManager, presentationTime: presentationTime,keyframe: false)
 			}
 			if let h264Codec = codec as? H264Codec
 			{

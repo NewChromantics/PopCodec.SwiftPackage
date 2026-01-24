@@ -147,7 +147,6 @@ struct MkvHeader
 public class MkvVideoSource : VideoSource
 {
 	public var typeName: String	{"Matroska"}
-	public var defaultSelectedTrack: TrackUid? = nil
 	
 	var url : URL
 	
@@ -192,6 +191,7 @@ public class MkvVideoSource : VideoSource
 		try await parser.parse(fileReader: &fileReader)
 		{
 			atom in
+			print("Got atom \(atom.fourcc)")
 			atoms.append(atom)
 			
 			if let seg = atom as? MkvAtom_Segment
@@ -211,10 +211,6 @@ public class MkvVideoSource : VideoSource
 		}
 		
 		var clusterAtoms : [MkvCluster] = segmentAtom.clusters
-		guard !clusterAtoms.isEmpty else
-		{
-			throw PopCodecError("No cluster atoms")
-		}
 		
 		//	this is async because of data reader, so precalc it for sync .map
 		var trackEncoding : [UInt64:TrackEncoding] = [:]
@@ -230,7 +226,7 @@ public class MkvVideoSource : VideoSource
 			track in
 			
 			let trackUid = track.name ?? "\(track.number)"////"\(track.uid)"
-			var duration = track.defaultDuration ?? 0 
+			var duration = segmentAtom.segmentInfo?.segmentInfo.duration 
 			var trackStartTime = Millisecond(0)
 			let encoding = trackEncoding[track.uid]!
 			
@@ -257,13 +253,13 @@ public class MkvVideoSource : VideoSource
 				
 				duration = lastSample.presentationEndTime - firstSample.presentationTime
 			}
-			return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
+			//return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
+			return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding)
 		}
 		
 		let header = MkvHeader(atoms: atoms, tracks: trackMetas)
 
-		defaultSelectedTrack = trackMetas.first{$0.encoding.isVideo}?.id
-		
+	
 		return header
 	}
 	
@@ -272,6 +268,12 @@ public class MkvVideoSource : VideoSource
 		let header = try await headerPromise.value
 		return header.tracks
 	}
+	
+	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
+	{
+		throw PopCodecError("todo: Mkv GetTrackSampleManager")
+	}
+
 	
 	public func GetAtoms() async throws -> [any Atom] 
 	{
@@ -320,11 +322,11 @@ public class MkvVideoSource : VideoSource
 	
 	func GetFrameSample(frame:TrackAndTime,keyframe:Bool) async throws -> Mp4Sample
 	{
-		let track = try await GetTrackMeta(trackUid: frame.track)
+		let track = try GetTrackSampleManager(track: frame.track)
 		return try await GetFrameSample(track: track, presentationTime: frame.time, keyframe:keyframe)
 	}
 	
-	func GetFrameSample(track:TrackMeta,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4Sample
+	func GetFrameSample(track:TrackSampleManager,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4Sample
 	{
 		guard let sample = track.GetSampleLessOrEqualToTime(presentationTime, keyframe: keyframe) else
 		{
@@ -333,7 +335,7 @@ public class MkvVideoSource : VideoSource
 		return sample
 	}
 	
-	func GetFrameSampleAndDependencies(track:TrackMeta,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4SampleAndDependencies
+	func GetFrameSampleAndDependencies(track:TrackSampleManager,presentationTime:Millisecond,keyframe:Bool) async throws -> Mp4SampleAndDependencies
 	{
 		//	todo: need to also get samples ahead of this for B-frames! need to start probing the h264 data
 		guard let sampleIndex = track.GetSampleIndexLessOrEqualToTime(presentationTime, keyframe: keyframe) else
@@ -391,7 +393,8 @@ public class MkvVideoSource : VideoSource
 		{
 			func GetFrameSampleAndDependencies(presentationTime:Millisecond) async throws -> Mp4SampleAndDependencies
 			{
-				return try await self.GetFrameSampleAndDependencies(track: track, presentationTime: presentationTime,keyframe: false)
+				let trackSampleManager = try GetTrackSampleManager(track: track.id)
+				return try await self.GetFrameSampleAndDependencies(track: trackSampleManager, presentationTime: presentationTime,keyframe: false)
 			}
 			if let h264Codec = codec as? H264Codec
 			{
@@ -616,7 +619,8 @@ struct MkvTextMeta {
 // MARK: - Segment Info
 struct SegmentInfo {
 	let timestampScale: UInt64?	//	X to nano - defaults to 1_000_000
-	let duration: Double?
+	let durationSecs : Double?
+	var duration : Millisecond?	{	durationSecs.map{ Millisecond($0 * 1000.0) }	}
 	let muxingApp: String?
 	let writingApp: String?
 	let title: String?
@@ -739,6 +743,7 @@ class MKVParser {
 					{
 						throw PopCodecError("Cannot parse cluster without segment info")
 					}
+					/*
 					//	speed up track lookup
 					let trackAtoms = trackListAtoms.flatMap{ $0.tracks }
 					let trackMap = Dictionary(uniqueKeysWithValues: trackAtoms.map{ ($0.number, $0) } )
@@ -750,7 +755,8 @@ class MKVParser {
 						element.childAtoms = children
 					}
 					//	temp hide 
-					//onAtom(element)
+					*/
+					onAtom(element)
 					
 				default:
 					print("Unhandled element \(element.fourcc)")
@@ -1267,7 +1273,7 @@ struct MkvAtom_Segment : Atom, SpecialisedAtom
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
-		throw PopCodecError("todo")
+		throw PopCodecError("todo: Segment decode")
 	}
 }
 
@@ -1318,7 +1324,7 @@ struct MkvAtom_SegmentInfo : Atom, SpecialisedAtom
 		
 		let segmentInfo = SegmentInfo(
 			timestampScale: timestampScale,
-			duration: duration,
+			durationSecs: duration,
 			muxingApp: muxingApp,
 			writingApp: writingApp,
 			title: title, 

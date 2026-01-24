@@ -172,7 +172,7 @@ func clampRange(from:Int,to:Int,min:Int,max:Int) -> ClosedRange<Int>
 	let to = clamp(to,min:min,max:max)
 	return from...to
 }
-	
+
 
 public struct TrackMeta : Identifiable
 {
@@ -180,21 +180,47 @@ public struct TrackMeta : Identifiable
 	
 	//	gr: if start & end dont exist, we should look at first/last samples'
 	public var startTime : Millisecond?
-	public var duration : Millisecond
-	public var endTime : Millisecond?	{	duration + (self.startTime ?? 0) }
+	public var duration : Millisecond?
+	public var endTime : Millisecond?	
+	{
+		let startTime = startTime ?? 0
+		return duration.map{ startTime + $0 }
+	}
+	
 	public var encoding : TrackEncoding
 	
-	//	will all formats know this data ahead of time?
-	public var samples : [Mp4Sample]		//	should be in presentation order
 	
+
+	public var icon : String		{	encoding.icon	}
+	public var label : String		{	return "\(id) \(encoding.label)"	}
+	public var colour : NSColor		{	encoding.colour	}
+	
+}
+
+
+
+public protocol TrackSampleManager
+{
+	//	current state
+	//	should be in presentation order
+	//	but mkv, we could pre-empt many in decode order when not knowing presentation order...
+	var samples : [Mp4Sample]	{get}		
+	
+	//	if no keyframes, should we return 0th? and if 0th is not a keyframe, does that mean there's never a keyframe?
+	//	or if there is no keyframe/sync atom, does that also mean there's no keyframe?
+	//	might be room for lots of optimisation here.
+	var keyframeSamples : [Mp4Sample]	{get}
+}
+
+
+public extension TrackSampleManager
+{
+	//	default implementation
 	//	if no keyframes, should we return 0th? and if 0th is not a keyframe, does that mean there's never a keyframe?
 	//	or if there is no keyframe/sync atom, does that also mean there's no keyframe?
 	//	might be room for lots of optimisation here.
 	public var keyframeSamples : [Mp4Sample]	{	samples.filter{ $0.isKeyframe }	}
 	
-	public var icon : String		{	encoding.icon	}
-	public var label : String		{	return "\(id) \(encoding.label)"	}
-	public var colour : NSColor		{	encoding.colour	}
 	
 	public func GetFrameTimeLessOrEqualToTime(_ time:Millisecond,keyframe:Bool) -> Millisecond?
 	{
@@ -281,16 +307,28 @@ public struct TrackMeta : Identifiable
 	}
 }
 
+public struct Mp4TrackSampleManager : TrackSampleManager
+{
+	//	will all formats know this data ahead of time?
+	public var samples : [Mp4Sample]		//	should be in presentation order
+	
+}
+
 
 public protocol VideoSource : ObservableObject
 {
 	var typeName : String			{	get	}
-	var defaultSelectedTrack : TrackUid?	{	get	}		//	if nothing selected, "show" this track (ie. default to pixels in video)
 	
 	static func DetectIsFormat(headerData:Data) async -> Bool
 	
 	init(url:URL)
+	
+	//	this needs to change to "wait for first track meta to appear"
+	//	then change track meta to something observable that updates 
 	func GetTrackMetas() async throws -> [TrackMeta]
+	//	sync as we want to work on whatever data exists right now
+	func GetTrackSampleManager(track:TrackUid) throws -> TrackSampleManager
+	
 	func GetAtoms() async throws -> [any Atom]				//	meta essentially
 	func GetFrameData(frame:TrackAndTime) async throws -> Data
 	func GetAtomData(atom:any Atom) async throws -> Data
@@ -321,6 +359,11 @@ extension VideoSource
 		return track
 	}
 	
+	func GetTrackSamples(trackUid:TrackUid) async throws -> TrackSampleManager
+	{
+		throw PopCodecError("todo")
+	}
+	
 	//	default
 	func AllocateTrackDecoder(track:TrackMeta) -> (any TrackDecoder)?
 	{
@@ -344,7 +387,6 @@ class VideoSourceFactory
 
 class TestVideoSource : VideoSource
 {
-	
 	required init(url: URL) 
 	{
 	}
@@ -363,10 +405,17 @@ class TestVideoSource : VideoSource
 	{
 		//await Task.sleep(milliseconds: 1000)
 		return [
-			TrackMeta(id: "Video1", duration: 60*1000, encoding: .Video(H264Codec()), samples: []),
-			TrackMeta(id: "Audio1",  duration: 1*1000, encoding: .Audio, samples: [])
+			TrackMeta(id: "Video1", duration: 60*1000, encoding: .Video(H264Codec())),
+			TrackMeta(id: "Audio1",  duration: 1*1000, encoding: .Audio)
 			]
 	}
+	
+	func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
+	{
+		throw PopCodecError("todo")
+	}
+	
+	
 	
 	static func DetectIsFormat(headerData: Data) async -> Bool 
 	{
