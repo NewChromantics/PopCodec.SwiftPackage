@@ -154,6 +154,9 @@ public class MkvVideoSource : VideoSource
 	var parseFileTask : Task<Void,Error>!
 	var headerPromise = SendablePromise<MkvHeader>()
 	
+	//	this can hopefully change into something a bit more dynamic
+	var trackSamples : [TrackUid:Mp4TrackSampleManager] = [:]
+	
 	required public init(url:URL)
 	{
 		self.url = url
@@ -224,41 +227,95 @@ public class MkvVideoSource : VideoSource
 		let trackMetas = trackAtoms.map
 		{
 			track in
-			
-			let trackUid = track.name ?? "\(track.number)"////"\(track.uid)"
 			var duration = segmentAtom.segmentInfo?.segmentInfo.duration 
 			var trackStartTime = Millisecond(0)
 			let encoding = trackEncoding[track.uid]!
 			
+			
+			//return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
+			return TrackMeta(id: track.trackUid, startTime: trackStartTime, duration: duration, encoding: encoding)
+		}
+		
+		let header = MkvHeader(atoms: atoms, tracks: trackMetas)
+
+		//	read samples
+		//	todo: change this to "add cluster" to then read the samples as we go
+		if true
+		{
 			let allSamples = clusterAtoms.flatMap
 			{
 				cluster in
 				return cluster.samples
 			}
-			let trackSamples = allSamples.filter{ $0.trackNumber == track.number }
-			var samples = trackSamples.map
+			
+			//	store some stuff for quick access
+			//	[tracknumber] =
+			struct TrackSampleStuff
+			{
+				var samples : [Mp4Sample]
+				var defaultDuration : Millisecond?
+				
+				mutating func AddSample(_ sample:Mp4Sample)
+				{
+					self.samples.append(sample)
+					//self.samples.sort{ a,b in a.presentationTime < b.presentationTime }
+				}
+			}
+			var trackSamples : [UInt64:TrackSampleStuff] = [:]
+			
+			//	init
+			for trackAtom in trackAtoms
+			{
+				trackSamples[trackAtom.number] = TrackSampleStuff(samples: [],defaultDuration: trackAtom.defaultDuration)
+			}
+			
+			
+			//let trackSamples = allSamples.filter{ $0.trackNumber == track.number }
+			try allSamples.forEach
 			{
 				mkvSample in
-				let filePosition = UInt64(mkvSample.fileOffset)
+				let filePosition = mkvSample.filePosition
 				let size = UInt32(mkvSample.size)
-				let presentationTime = Millisecond(mkvSample.timestamp)
+				let presentationTime = Millisecond(mkvSample.presentationTime)
+				guard var samplesForTrack = trackSamples[mkvSample.trackNumber] else
+				{
+					throw PopCodecError("Track missing for \(mkvSample.trackNumber)")
+				}
+				let sampleIndexInTrack = samplesForTrack.samples.count
+				let calculatedDecodeTime = mkvSample.GetDecodeTimeStamp(sampleIndexInTrack: UInt64(sampleIndexInTrack))
+				//	gr: not sure this is right? presentation time I dont think exists without decode time?
+				//		and presentation time comes from decode time (offset in cluster * sample duration)
 				let decodeTime = Millisecond(mkvSample.decodeTimestamp) ?? presentationTime
-				let duration = mkvSample.duration ?? track.defaultDuration ?? 0
-				return Mp4Sample(mdatOffset: filePosition, size: size, decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: mkvSample.isKeyframe)
-			}
-			samples.sort{ a,b in a.presentationTime < b.presentationTime }
-			
-			if let firstSample = samples.first, let lastSample = samples.last
-			{
+				//	todo: fix this unscaled duration
+				let duration = mkvSample.durationUnscaled ?? samplesForTrack.defaultDuration ?? 1
+				let mp4Sample = Mp4Sample(mdatOffset: filePosition, size: size, decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: mkvSample.isKeyframe)
 				
-				duration = lastSample.presentationEndTime - firstSample.presentationTime
+				samplesForTrack.AddSample(mp4Sample)
+				trackSamples[mkvSample.trackNumber] = samplesForTrack
+				if samplesForTrack.samples.count % 1000 == 0
+				{
+					print("track \(mkvSample.trackNumber) got to \(samplesForTrack.samples.count) samples...")
+				}
 			}
-			//return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
-			return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding)
+			
+			//	save
+			for (trackNumber,sampleStuff) in trackSamples
+			{
+				let atom = trackAtoms.first{ $0.number == trackNumber }
+				guard let atom else
+				{
+					throw PopCodecError("atom for track number \(trackNumber) gone missing")
+				}
+				if self.trackSamples.index(forKey: atom.trackUid) == nil
+				{
+					self.trackSamples[atom.trackUid] = Mp4TrackSampleManager(samples:[])
+				}
+				let samples = sampleStuff.samples.sorted{ a,b in a.presentationTime < b.presentationTime }
+				self.trackSamples[atom.trackUid]!.samples = samples
+			}
 		}
 		
-		let header = MkvHeader(atoms: atoms, tracks: trackMetas)
-
+		
 	
 		return header
 	}
@@ -271,7 +328,12 @@ public class MkvVideoSource : VideoSource
 	
 	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
 	{
-		throw PopCodecError("todo: Mkv GetTrackSampleManager")
+		let samples = self.trackSamples[track]
+		guard let samples else
+		{
+			throw PopCodecError("No sample manager for \(track)")
+		}
+		return samples
 	}
 
 	
@@ -659,9 +721,9 @@ struct MkvSample
 	
 	var timestamp: Millisecond  {	presentationTime	}
 	let isKeyframe: Bool
-	let fileOffset: Int   // Offset in the file where sample data starts
-	let size: Int         // Size of sample data in bytes
-	var duration: UInt64? // In track time scale units
+	let filePosition : UInt64
+	let size : UInt64
+	var durationUnscaled : UInt64? // In track time scale units
 	
 	func GetDecodeTimeStamp(sampleIndexInTrack:UInt64) -> Millisecond
 	{
@@ -670,12 +732,12 @@ struct MkvSample
 		let ms = nanos / 1_000_000
 		return ms
 	}
-	
+	/*
 	/// Read the sample data from the original Data object
 	func readData(from data: Data) -> Data? {
-		guard fileOffset + size <= data.count else { return nil }
+		guard filePosition + size <= data.count else { return nil }
 		return data[fileOffset..<fileOffset + size]
-	}
+	}*/
 }
 
 // MARK: - Cluster
@@ -743,7 +805,7 @@ class MKVParser {
 					{
 						throw PopCodecError("Cannot parse cluster without segment info")
 					}
-					/*
+					
 					//	speed up track lookup
 					let trackAtoms = trackListAtoms.flatMap{ $0.tracks }
 					let trackMap = Dictionary(uniqueKeysWithValues: trackAtoms.map{ ($0.number, $0) } )
@@ -755,7 +817,7 @@ class MKVParser {
 						element.childAtoms = children
 					}
 					//	temp hide 
-					*/
+					
 					onAtom(element)
 					
 				default:
@@ -962,7 +1024,7 @@ class MKVParser {
 						clusterTimestampUnscaled: clusterTimestampUnscaled,
 						timestampScale: segmentTimescale
 					)
-					if sample.duration == nil
+					if sample.durationUnscaled == nil
 					{
 						print("Block sample missing duration")
 					}
@@ -1002,14 +1064,15 @@ class MKVParser {
 		let isKeyframe = (flags & 0x80) != 0
 		
 		// Calculate frame data location
-		let frameDataOffset = offset
-		let dataSize = endOffset - offset
-		guard frameDataOffset + dataSize <= data.count else {
+		let frameDataOffset = UInt64(offset)
+		let dataSize = UInt64(endOffset - offset)
+		guard frameDataOffset + dataSize <= data.count else 
+		{
 			throw MKVError.endOfData
 		}
 		
 		// Skip over the data (don't copy it)
-		offset += dataSize
+		offset += Int(dataSize)
 		/*
 		let relativeTimestampNanos = Int(relativeTimestampValue) * Int(timestampScale)
 		// Calculate absolute timestamp in milliseconds
@@ -1020,11 +1083,12 @@ class MKVParser {
 		let decodeTimestamp = assignDecodeTimestamp(trackNumber: trackNumber, timestampScale: Int64(timestampScale))
 
 		//	read default duration
-		var duration : UInt64? = nil
+		var durationUnscaled : UInt64? = nil
+		/*
 		if let trackMeta = trackMetas[trackNumber]
 		{
-			duration = trackMeta.defaultDuration
-		}
+			durationUnscaled = trackMeta.defaultDuration
+		}*/
 		
 		return MkvSample(
 			trackNumber: trackNumber,
@@ -1033,21 +1097,21 @@ class MKVParser {
 			clusterPresentationTimeUnscaled: clusterTimestampUnscaled,
 			decodeTimestamp: decodeTimestamp,
 			isKeyframe: isKeyframe,
-			fileOffset: frameDataOffset,
+			filePosition: frameDataOffset,
 			size: dataSize,
-			duration: duration
+			durationUnscaled: durationUnscaled
 		)
 	}
 	
 	private func parseBlockGroup(size: Int, clusterTimestampUnscaled: UInt64, timestampScale: UInt64) throws -> MkvSample {
 		let endOffset = offset + size
 		
-		var frameDataOffset: Int = 0
-		var frameDataSize: Int = 0
+		var frameDataOffset: UInt64 = 0
+		var frameDataSize: UInt64 = 0
 		var trackNumber: UInt64 = 0
 		var relativeTimestampUnscaled: Int16 = 0
 		var isKeyframe = true
-		var duration: UInt64?
+		var durationUnscaled : UInt64?
 		
 		while offset < endOffset {
 			guard let elem = try? readElement() else { break }
@@ -1077,17 +1141,17 @@ class MKVParser {
 					isKeyframe = (flags & 0x80) != 0
 					
 					// Calculate frame data location
-					frameDataOffset = offset
+					frameDataOffset = UInt64(offset)
 					let remainingSize = Int(elem.size) - (offset - blockStartOffset)
 					guard offset + remainingSize <= data.count else {
 						throw MKVError.endOfData
 					}
 					
-					frameDataSize = remainingSize
+					frameDataSize = UInt64(remainingSize)
 					offset += remainingSize
 					
 				case .blockDuration:
-					duration = try readUInt(size: Int(elem.size))
+					durationUnscaled = try readUInt(size: Int(elem.size))
 					
 				case .referenceBlock:
 					isKeyframe = false
@@ -1117,9 +1181,9 @@ class MKVParser {
 			//timestamp: timestampMs,
 			decodeTimestamp: decodeTimestamp,
 			isKeyframe: isKeyframe,
-			fileOffset: frameDataOffset,
+			filePosition: frameDataOffset,
 			size: frameDataSize,
-			duration: duration
+			durationUnscaled: durationUnscaled
 		)
 	}
 	
@@ -1376,6 +1440,10 @@ struct MkvAtom_TrackList : Atom, SpecialisedAtom
 struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 {
 	static var fourcc = EBMLElementID.trackEntry.fourcc
+	
+	//	for app, is .name unique?
+	//	should use .uid, but this is more readbale for now
+	var trackUid : TrackUid	{	self.name ?? "\(self.number)"	}
 	
 	var header: any Atom
 	var childAtoms: [any Atom]?
