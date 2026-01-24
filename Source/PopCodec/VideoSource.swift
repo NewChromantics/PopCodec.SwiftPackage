@@ -9,10 +9,12 @@ public typealias TrackUid = String
 
 
 //	reference to a frame on a track
-public struct TrackAndTime : Hashable
+public struct TrackAndTime : Hashable, CustomStringConvertible
 {
 	public var track : TrackUid
 	public var time : Millisecond
+	
+	public var description: String	{	"\(time)ms [\(track)]"	}
 	
 	public init(track: TrackUid, time: Millisecond) 
 	{
