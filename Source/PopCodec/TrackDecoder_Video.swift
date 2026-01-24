@@ -220,7 +220,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	}
 	
 	
-	public func LoadFrame(time: Millisecond) -> AsyncDecodedFrame 
+	public func LoadFrame(time: Millisecond,priority:DecodePriority) -> AsyncDecodedFrame 
 	{
 		if let cached = GetDecodedFrame(time: time)
 		{
@@ -247,7 +247,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		{
 			do
 			{
-				let frame = try await DecodeFrame(time: time)
+				let frame = try await DecodeFrame(time: time,priority: priority)
 				await asyncFrame.OnFrame(frame)
 			}
 			catch
@@ -259,7 +259,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	}
 	
 	//	if the time hasn't been resolved, the closest frame will be returned
-	public func DecodeFrame(time: Millisecond) async throws -> FrameType 
+	public func DecodeFrame(time: Millisecond,priority:DecodePriority) async throws -> FrameType 
 	{
 		async let decoderPromise = allocateDecoderTask.result
 		
@@ -278,8 +278,8 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		var decodeSamples = sampleAndDependencies.samplesInDecodeOrder
 		let decoder = try await decoderPromise.get()
 		
-		print("Submitting batch \(time)...")
-		try decoder.DecodeFrames(frames:decodeSamples)
+		print("Submitting batch \(time) \(priority)...")
+		try decoder.DecodeFrames(frames:decodeSamples,priority: priority)
 		{
 			//	do we still need to decode this?
 			let targetFrameExists = await self.decodedFrameNumbersCache.contains(sampleAndDependencies.sample.presentationTime)

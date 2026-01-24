@@ -160,8 +160,16 @@ extension Data
 }
 
 
+public enum DecodePriority : Comparable
+{
+	case Highest		//	if something comes in with this, it reduces other highests to high
+	case High
+	case Low
+}
+
 struct DecodeBatch
 {
+	var priority : DecodePriority
 	var frames : [Mp4Sample]
 	var frameStillRequired : ()async->Bool	//	async for isolation, but maybe there's another need
 }
@@ -253,6 +261,46 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		return lengthInData + lengthSize
 	}
 	
+	private func PopNextBatch() async -> DecodeBatch?
+	{
+		//	todo: let batches that only need one decode go ahead of big batches?
+		
+		//	let batches that are ready, resolve
+		//	gr: we dont need to run them atm, just remove them
+		var keepQueue : [DecodeBatch] = []
+		for batch in decodeQueue
+		{
+			let stillRequired = await batch.frameStillRequired()
+			if stillRequired
+			{
+				keepQueue.append(batch)
+			}
+		}
+		decodeQueue = keepQueue
+		
+		if decodeQueue.isEmpty
+		{
+			return nil
+		}
+		
+		//	FIFO but by priority
+		var queuePrioritys = Set<DecodePriority>()
+		decodeQueue.forEach{ queuePrioritys.insert( $0.priority ) }
+		let highestPriority = queuePrioritys.sorted{ a,b in a > b }.first!
+		
+		//return decodeQueue.popFirst()
+		let firstIndexWithHighestPriority = decodeQueue.firstIndex{ $0.priority == highestPriority }
+		guard let firstIndexWithHighestPriority else
+		{
+			print("Queue missing batch with expected highest priority \(highestPriority)")
+			return decodeQueue.popFirst()
+		}
+		
+		let popped = decodeQueue[firstIndexWithHighestPriority]
+		decodeQueue.remove(at: firstIndexWithHighestPriority)
+		return popped
+	}
+	
 	private func DecodeThread() async
 	{
 		//	wait for frames to change
@@ -260,7 +308,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		{
 			//	filter unncessacry decodes here
 			//	todo: if we do batches, verifiy keyframes
-			guard let nextBatch = decodeQueue.popFirst() else
+			guard let nextBatch = await PopNextBatch() else
 			{
 				await Task.sleep(milliseconds: 100)
 				continue
@@ -273,6 +321,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 				continue
 			}
 			
+			print("Decoding batch for \(nextBatch.frames.last!.presentationTime) priority=\(nextBatch.priority)")
 			let decodeBatch = FilterUnneccesaryDecodes(samples: nextBatch.frames)
 			
 			do
@@ -293,9 +342,24 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		}
 	}
 	
-	func DecodeFrames(frames:[Mp4Sample],frameStillRequired:@escaping()async->Bool) throws
+	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) throws
 	{
-		let batch = DecodeBatch(frames: frames, frameStillRequired: frameStillRequired)
+		let batch = DecodeBatch(priority: priority, frames: frames, frameStillRequired: frameStillRequired)
+		
+		//	if this new priority is highest, reduce all the other highests
+		if priority == .Highest
+		{
+			decodeQueue.mutateEach
+			{
+				batch in
+				if batch.priority == .Highest
+				{
+					print("Downgraded batch from highest to high")
+					batch.priority = .High
+				}
+			}
+		}
+		
 		decodeQueue.append(batch)
 		//	wake up thread
 	}

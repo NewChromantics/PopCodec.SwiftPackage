@@ -5,7 +5,7 @@ import Combine
 //	rename FrameRenderable here to FramePromise?
 public protocol TrackDecoder : ObservableObject, ObservableSubscribable
 {
-	func LoadFrame(time:Millisecond) -> AsyncDecodedFrame
+	func LoadFrame(time:Millisecond,priority:DecodePriority) -> AsyncDecodedFrame
 	func HasCachedFrame(time:Millisecond) -> Bool		//	maybe we can return (FrameRenderable?) ?
 	func GetDebugView() -> AnyView
 }

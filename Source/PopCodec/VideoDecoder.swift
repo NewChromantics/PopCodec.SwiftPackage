@@ -61,5 +61,5 @@ public protocol VideoDecoder
 	init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (OutputFrameType) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 
 	//	because this can be batched up, we may no longer need to decode this once we come to do the batch
-	func DecodeFrames(frames:[Mp4Sample],frameStillRequired:@escaping()async->Bool) throws
+	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) throws
 }	

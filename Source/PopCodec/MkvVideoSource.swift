@@ -749,7 +749,8 @@ class MKVParser {
 					{
 						element.childAtoms = children
 					}
-					onAtom(element)
+					//	temp hide 
+					//onAtom(element)
 					
 				default:
 					print("Unhandled element \(element.fourcc)")
