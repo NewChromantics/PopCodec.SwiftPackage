@@ -197,17 +197,13 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		trackSampleKeyframePublishTrigger += 1
 	}
 	
-	func OnFoundSamples(track:TrackUid,samples:[Mp4Sample])
+	func OnFoundSamples(track:TrackUid,samples:[Mp4Sample]) async
 	{
 		let anyKeyframes = samples.contains{ $0.isKeyframe }
 		
 		var sampleManager = self.trackSamples[track] ?? Mp4TrackSampleManager()
 
-		//	only sample the new ones - is this okay?
-		let samples = samples.sorted{ a,b in a.presentationTime < b.presentationTime }
-		sampleManager.samples.append(contentsOf: samples)
-		//sampleManager.samples.sort{ a,b in a.presentationTime < b.presentationTime }
-		
+		await sampleManager.AddSamples(samples: samples)
 		self.trackSamples[track] = sampleManager
 		//print("track \(track) now has \(self.trackSamples[track]!.samples.count) samples")
 		
@@ -307,7 +303,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 						
 						return Mp4Sample(mdatOffset: mkvSample.sampleDataFilePosition, size: UInt32(mkvSample.sampleDataSize), decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: isKeyframe)
 					}
-					OnFoundSamples(track: trackUid, samples: mp4Samples)
+					await OnFoundSamples(track: trackUid, samples: mp4Samples)
 				}
 				catch
 				{
@@ -450,6 +446,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 
 		//	read first root element
 		let documentMeta = try await fileReader.ReadEbmlDocumentMetaElement()
+		await OnFoundAtom(atom: documentMeta)
 		
 		//	read segments (need example file with more than one!)
 		while fileReader.bytesRemaining > 0

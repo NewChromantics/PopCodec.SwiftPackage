@@ -363,16 +363,29 @@ public extension TrackSampleManager
 	}
 }
 
+
 public class Mp4TrackSampleManager : TrackSampleManager
 {
 	//	will all formats know this data ahead of time?
-	public var samples : [Mp4Sample]	//	should be in presentation order
+	@MainActor public var samples : [Mp4Sample]	//	should be in presentation order
+	@MainActor public var keyframeSamples : [Mp4Sample] = []	//	caching for more speed
 	
 	init(samples:[Mp4Sample]=[])
 	{
 		self.samples = samples
 	}
 	
+	@MainActor func AddSamples(samples:[Mp4Sample])
+	{
+		let newKeyframes = samples.filter{ $0.isKeyframe }
+		
+		//	only sort the new ones - is this okay?
+		let samples = samples.sorted{ a,b in a.presentationTime < b.presentationTime }
+		self.samples.append(contentsOf: samples)
+		//self.samples.sort{ a,b in a.presentationTime < b.presentationTime }
+		
+		self.keyframeSamples.append(contentsOf: newKeyframes)
+	}
 }
 
 

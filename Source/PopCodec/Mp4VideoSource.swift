@@ -129,7 +129,7 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 			let trackId = "\(trackIndex+1)"
 			
 			let trackMeta = TrackMeta(id: trackId, startTime:firstTime, duration:duration, encoding: trackAtom.encoding)
-			let trackSamples = Mp4TrackSampleManager(samples: samples)
+			let trackSamples = await Mp4TrackSampleManager(samples: samples)
 			
 			self.tracks.append(trackMeta)
 			trackSampleManagers[trackMeta.id] = trackSamples

@@ -201,8 +201,14 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		
 		destinationPixelBufferAttributes[kCVPixelBufferOpenGLCompatibilityKey] = true
 		destinationPixelBufferAttributes[kCVPixelBufferMetalCompatibilityKey] = true
-		destinationPixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_32BGRA	//	bgra ios only
+		
+		//	bgra ios only
+		//	gr: macos 26 (maybe before) now supports BGRA!
+		destinationPixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_32BGRA	
+		//destinationPixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_128RGBAFloat
 		//destinationPixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+		//destinationPixelBufferAttributes[kCVPixelBufferPixelFormatTypeKey] = kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+		
 		
 		var session : VTDecompressionSession?
 		let result = VTDecompressionSessionCreate(allocator: nil, formatDescription: format, decoderSpecification: decoderParams as CFDictionary, imageBufferAttributes: destinationPixelBufferAttributes as CFDictionary, decompressionSessionOut: &session)
