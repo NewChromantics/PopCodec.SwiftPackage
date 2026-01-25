@@ -776,6 +776,7 @@ func ReadSegmentAtom(fileReader:inout DataReader,onAtom:(any Atom)async->Void) a
 			case .tracks:
 				let trackListAtom = try await MkvAtom_TrackList.Decode(header: element, content: &elementContent)
 				trackListAtoms.append(trackListAtom)
+				await onAtom(trackListAtom)
 				
 			case .cluster:
 				let clusterAtom = try await MkvAtom_Cluster.Decode(header:element, content:&elementContent)
@@ -1051,7 +1052,7 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 
 	var number : UInt64
 	var uid : UInt64
-	var codecID : String?
+	var codecId : String?
 	var name : String?
 	var language: String?
 	var defaultDurationNano: UInt64?
@@ -1064,25 +1065,57 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 	//	should default to video?
 	var trackType : MkvTrackType?	{	trackTypeValue.map{ MkvTrackType(rawValue: $0) } ?? nil	}
 	
+	//	if we identify the codec, we auto decode the private data
+	var codecPrivateDecodedAtom : (any Atom)?
+	var codecDecodedAtomError : Error?
+	
 	func GetMetaAtoms(parent:any Atom) -> [any Atom]
 	{
+		let maybeAtoms : [(any Atom)?] = 
 		[
 			InfoAtom(info: "track number \(number)", parent: parent,uidOffset: 0),
 			InfoAtom(info: "uid \(uid)", parent: parent,uidOffset: 1),
-			InfoAtom(info: "codecID \(codecID)", parent: parent,uidOffset: 2),
+			InfoAtom(info: "codecId \(codecId)", parent: parent,uidOffset: 2),
 			InfoAtom(info: "name \(name ?? "null")", parent: parent,uidOffset: 3),
 			InfoAtom(info: "language \(language ?? "null")", parent: parent,uidOffset: 4),
-			InfoAtom(info: "defaultDuration \(defaultDurationString)", parent: parent,uidOffset: 5)
+			InfoAtom(info: "defaultDuration \(defaultDurationString)", parent: parent,uidOffset: 5),
+			codecPrivateDecodedAtom,
+			codecDecodedAtomError.map{ ErrorAtom(errorContext: "Decoding Codec Data", error: $0, erroredAtom: self) }
 		]
+		return maybeAtoms.compactMap{$0}
 	}
 	
+	static func DecodeCodecPrivateData(codecId:String,codecData:Data) async throws -> (any Atom)?
+	{
+		let hevcId = "V_MPEGH/ISO/HEVC"
+		let h264Id = "V_MPEG4/ISO/AVC"
+		if codecId == h264Id
+		{
+			//	data is avcc atom
+			let dummyAtomHeader = try AtomHeader(fourcc: Atom_avcc.fourcc, filePosition: 0, size: UInt32(codecData.count), size64: nil )
+			var dataReader = DataReader(data: codecData)
+			let atom = try await Atom_avcc.Decode(header: dummyAtomHeader, content: &dataReader)
+			return atom
+		}
+		
+		if codecId == hevcId
+		{
+			//	data is avcc atom
+			let dummyAtomHeader = try AtomHeader(fourcc: Atom_hvcc.fourcc, filePosition: 0, size: UInt32(codecData.count), size64: nil)
+			var dataReader = DataReader(data: codecData)
+			let atom = try await Atom_hvcc.Decode(header: dummyAtomHeader, content: &dataReader)
+			return atom
+		}
+		
+		return nil
+	}
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
 		var number: UInt64 = 0
 		var uid: UInt64 = 0
 		var trackType : UInt8?
-		var codecID = ""
+		var codecId : String?
 		var name: String?
 		var language: String?
 		var defaultDurationNano: UInt64?
@@ -1106,7 +1139,7 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 					trackType = UInt8(value)
 					
 				case .codecID:
-					codecID = try await content.readString(size: element.contentSize)
+					codecId = try await content.readString(size: element.contentSize)
 				case .codecPrivate:
 					codecPrivate = try await content.ReadBytes(element.contentSize)
 				case .name:
@@ -1127,7 +1160,21 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 			}
 		}
 		
-		return Self(header: header,children: children, number: number, uid:uid, codecID: codecID, codecPrivate: codecPrivate, audioMeta:audioMeta, videoMeta:videoMeta, trackTypeValue:trackType)
+		var codecAtom : (any Atom)?
+		var codecDecodedAtomError : Error?
+		if let codecId, let codecPrivate
+		{
+			do
+			{
+				codecAtom = try await DecodeCodecPrivateData(codecId:codecId,codecData:codecPrivate)
+			}
+			catch
+			{
+				codecDecodedAtomError = error
+			}
+		}
+		
+		return Self(header: header,children: children, number: number, uid:uid, codecId: codecId, codecPrivate: codecPrivate, audioMeta:audioMeta, videoMeta:videoMeta, trackTypeValue:trackType, codecPrivateDecodedAtom:codecAtom, codecDecodedAtomError:codecDecodedAtomError)
 	}
 }
 
