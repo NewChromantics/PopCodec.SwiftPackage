@@ -1,4 +1,5 @@
 import Foundation
+import PopCommon
 import Combine
 
 
@@ -43,16 +44,20 @@ struct Mp4Header
 	}
 }
 
-public class Mp4VideoSource : VideoSource, ObservableObject
+public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 {
+	public var publisherPublisherObservers: [AnyCancellable] = []
+	
 	public var typeName: String	{"Mpeg"}
 	
 	var url : URL
+	@Published public var atoms: [any Atom] = []
+	@Published public var tracks: [TrackMeta] = []
+	@Published var trackSampleManagers : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	//	need to remove this, esp for chunked mp4s
-	var readHeaderTask : Task<Mp4Header,Error>!	//	promise
+	var readHeaderTask : Task<Void,Error>!	//	promise
 	
-	@Published var trackSampleManagers : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	required public init(url:URL)
 	{
@@ -61,22 +66,39 @@ public class Mp4VideoSource : VideoSource, ObservableObject
 		readHeaderTask = Task(operation: ReadHeader)
 	}
 	
-	func ReadHeader() async throws -> Mp4Header
+	public func WatchAtoms(onAtomsChanged:@escaping([any Atom])->Void) 
+	{
+		self.watch(&_atoms)
+		{
+			onAtomsChanged(self.atoms)
+		}
+	}
+	
+	
+	public func WatchTracks(onTracksChanged:@escaping([TrackMeta])->Void) 
+	{
+		self.watch(&_tracks)
+		{
+			onTracksChanged(self.tracks)
+		}
+	}
+	
+	
+	func ReadHeader() async throws
 	{
 		var fileData = try Data(contentsOf:url, options: .alwaysMapped)
 		var fileReader = DataReader(data: fileData)
 		
-		var header = Mp4Header()
 		
 		try await ReadMp4Header(reader: &fileReader)
 		{
 			atom in
 			print("Found atom \(atom.fourcc) content size x\(atom.contentSize)")
-			header.atoms.append(atom)
+			atoms.append(atom)
 		}
 		
 		//	pull tracks out of atoms
-		let moov = try header.GetAtom(fourcc: Fourcc("moov"))
+		let moov = try GetRootAtom(fourcc: Fourcc("moov"))
 		let traks = moov.childAtoms?.compactMap{ $0 as? Atom_trak } ?? []
 		for (trackIndex,trackAtom) in traks.enumerated()
 		{
@@ -91,17 +113,10 @@ public class Mp4VideoSource : VideoSource, ObservableObject
 			let trackMeta = TrackMeta(id: trackId, startTime:firstTime, duration:duration, encoding: trackAtom.encoding)
 			let trackSamples = Mp4TrackSampleManager(samples: samples)
 			
-			header.tracks.append(trackMeta)
+			self.tracks.append(trackMeta)
 			trackSampleManagers[trackMeta.id] = trackSamples
 		}
 		
-		return header
-	}
-	
-	public func GetTrackMetas() async throws -> [TrackMeta] 
-	{
-		let header = try await readHeaderTask.value
-		return header.tracks
 	}
 	
 	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager
@@ -114,12 +129,6 @@ public class Mp4VideoSource : VideoSource, ObservableObject
 		return samples
 	}
 	
-	
-	public func GetAtoms() async throws -> [any Atom] 
-	{
-		let header = try await readHeaderTask.value
-		return header.atoms
-	}
 	
 	public func GetAtomData(atom: any Atom) async throws -> Data 
 	{

@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import PopCommon
 
 
@@ -109,11 +110,11 @@ extension MkvAtom_TrackMeta
 	{
 		guard let codecData else
 		{
-			throw DataNotFound("Missing codec data for \(codecID)")
+			throw DataNotFound("Missing codec data for \(codecId)")
 		}
 		let hevcId = "V_MPEGH/ISO/HEVC"
 		let h264Id = "V_MPEG4/ISO/AVC"
-		if codecID == h264Id
+		if codecId == h264Id
 		{
 			//	data is avcc atom
 			let dummyAtomHeader = try AtomHeader(fourcc: Atom_avcc.fourcc, filePosition: 0, size: UInt32(codecData.count), size64: nil )
@@ -122,7 +123,7 @@ extension MkvAtom_TrackMeta
 			return atom.codec
 		}
 		
-		if codecID == hevcId
+		if codecId == hevcId
 		{
 			//	data is avcc atom
 			let dummyAtomHeader = try AtomHeader(fourcc: Atom_hvcc.fourcc, filePosition: 0, size: UInt32(codecData.count), size64: nil)
@@ -131,27 +132,28 @@ extension MkvAtom_TrackMeta
 			return atom.codec
 		}
 		
-		throw PopCodecError("Unknown video codec \(codecID)")
+		throw PopCodecError("Unknown video codec \(codecId)")
 	}
 }
 
 
 
-public class MkvVideoSource : VideoSource
+
+public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 {
+	public var publisherPublisherObservers: [AnyCancellable] = []
+	
 	public var typeName: String	{"Matroska"}
 	
 	var url : URL
-	
-	var atoms : [any Atom] = []
-	var trackMetas : [TrackMeta] = []
+	@Published public var atoms: [any Atom] = []
+	@Published public var tracks: [TrackMeta] = []
+	private var trackNumberToTrackUid : [UInt64:TrackUid] = [:]
+	@Published var trackSamples : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	//	we parse the whole file as its a chunked format 
 	var parseFileTask : Task<Void,Error>!
-	var firstTracks = SendablePromise<[TrackMeta]>()
 	
-	//	this can hopefully change into something a bit more dynamic
-	var trackSamples : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	required public init(url:URL)
 	{
@@ -159,16 +161,129 @@ public class MkvVideoSource : VideoSource
 		
 		parseFileTask = Task(operation: ParseFile)
 	}
+
+	
+	public func WatchAtoms(onAtomsChanged:@escaping([any Atom])->Void) 
+	{
+		self.watch(&_atoms)
+		{
+			onAtomsChanged(self.atoms)
+		}
+	}
+	
+	public func WatchTracks(onTracksChanged:@escaping([TrackMeta])->Void) 
+	{
+		self.watch(&_tracks)
+		{
+			onTracksChanged(self.tracks)
+		}
+	}
+	
+	func OnFoundSamples(track:TrackUid,samples:[Mp4Sample])
+	{
+		var sampleManager = self.trackSamples[track] ?? Mp4TrackSampleManager()
+		sampleManager.samples.append(contentsOf: samples)
+		sampleManager.samples.sort{ a,b in a.presentationTime < b.presentationTime }
+		self.trackSamples[track] = sampleManager
+		print("track \(track) now has \(self.trackSamples[track]!.samples.count) samples")
+		
+		self.objectWillChange.send()
+	}
 	
 	func OnFoundAtom(atom:any Atom) async
 	{
 		self.atoms.append(atom)
 		
-		//	found a track
-		if let track = atom as? MkvAtom_TrackMeta
+		let segmentInfoAtom : MkvAtom_SegmentInfo? = try? atoms.GetFirstChildAtomAs(fourcc: MkvAtom_SegmentInfo.fourcc)
+		
+		var newTrackAtoms : [MkvAtom_TrackMeta] = []
+		[atom].EnumerateAtoms(fourcc:MkvAtom_TrackMeta.fourcc)
 		{
-			//	turn into meta
-			print("Turn atom into meta")
+			atom in
+			if let track = atom as? MkvAtom_TrackMeta
+			{
+				newTrackAtoms.append(track)
+			}
+			return true
+		}
+		
+		//	save new tracks
+		for trackAtom in newTrackAtoms
+		{
+			let encoding = await trackAtom.GetEncoding()
+			let startTime : Millisecond? = nil
+			let duration = segmentInfoAtom?.segmentInfo.duration
+			let trackMeta = TrackMeta(id: trackAtom.trackUid, startTime: startTime, duration: duration, encoding: encoding)
+			self.trackNumberToTrackUid[trackAtom.number] = trackMeta.id
+			self.tracks.append(trackMeta)
+			self.trackSamples[trackMeta.id] = Mp4TrackSampleManager()
+		}
+		
+		//	new atoms
+		print("new atom \(atom.fourcc)")
+		
+		//	new samples in a cluster
+		if let cluster = atom as? MkvAtom_Cluster
+		{
+			let allTrackMetaAtoms : [MkvAtom_TrackMeta] = self.atoms.EnumerateAtomsOf()
+			
+			for trackNumber in cluster.samplesPerTrackNumberInDecodeOrder.keys
+			{
+				let samples = cluster.samplesPerTrackNumberInDecodeOrder[trackNumber]!
+				do
+				{
+					guard let trackUid = self.trackNumberToTrackUid[trackNumber] else
+					{
+						throw PopCodecError("Cannot find track uid for track number \(trackNumber)")
+					}
+					guard let trackAtom = allTrackMetaAtoms.first(where: {$0.number == trackNumber} ) else
+					{
+						throw PopCodecError("Missing atom for track number \(trackNumber)")
+					}
+					
+					//	todo: we need the cluster to know which segment it came from
+					let segmentTimescale = segmentInfoAtom?.segmentInfo.timestampScale ?? 1_000_000
+					let clusterStartTimeUnscaled = (cluster.clusterTimestampUnscaled ?? 0)
+					
+					let sampleDuration = trackAtom.defaultDuration ?? 1
+
+					print("Cluster start \(cluster.clusterTimestampUnscaled ?? 0)")
+					
+					//	todo: store clusters into a more dynamic TrackSampleManager
+					//	convert samples
+					let mp4Samples = samples.enumerated().map
+					{
+						sampleIndexInTrackInCluster,mkvSample in
+						var decodeTimeUnscaled : UInt64 = UInt64(sampleIndexInTrackInCluster) * sampleDuration
+						decodeTimeUnscaled += clusterStartTimeUnscaled
+						
+						var presentationTimeUnscaled = Int64(clusterStartTimeUnscaled) + Int64(mkvSample.relativeTimestampUnscaled)
+						
+						let decodeTime = decodeTimeUnscaled * segmentTimescale / 1_000_000
+						let presentationTime = UInt64( presentationTimeUnscaled * Int64(segmentTimescale) / 1_000_000 )
+						//print("decodeTime \(decodeTime) + presentationTime \(presentationTime) ... diff \(Int(presentationTime)-Int(decodeTime))")
+						
+						let isKeyframe = mkvSample.isKeyframe
+						
+						//	this cant be right
+						//let duration = segmentTimescale
+						let duration = sampleDuration
+						
+						if presentationTime < 0
+						{
+							print("negative presentation time \(presentationTime)")
+						}
+						
+						return Mp4Sample(mdatOffset: mkvSample.sampleDataFilePosition, size: UInt32(mkvSample.sampleDataSize), decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: isKeyframe)
+					}
+					OnFoundSamples(track: trackUid, samples: mp4Samples)
+				}
+				catch
+				{
+					//	nowhere to store this error!
+					print("Error adding cluster samples; \(error.localizedDescription)")
+				}
+			}
 		}
 		
 		/*
@@ -184,7 +299,17 @@ public class MkvVideoSource : VideoSource
 			if let seg = atom as? MkvAtom_Segment
 			{
 				segmentAtom = seg
+
+				if !seg.tracks.isEmpty
+				{
+					let trackMetas = await try? Self.TrackAtomsToTrackMetas(seg.tracks, segmentAtom: seg)
+					if let trackMetas
+					{
+						firstTracksPromise.Resolve(trackMetas)
+					}
+				}
 			}
+			
 		}		
 		
 		guard let segmentAtom else
@@ -199,26 +324,9 @@ public class MkvVideoSource : VideoSource
 		
 		var clusterAtoms = segmentAtom.clusters
 		
-		//	this is async because of data reader, so precalc it for sync .map
-		var trackEncoding : [UInt64:TrackEncoding] = [:]
-		for track in trackAtoms
-		{
-			let encoding = await track.GetEncoding()
-			trackEncoding[track.uid] = encoding
-		}
+		let trackMetas = try await Self.TrackAtomsToTrackMetas(trackAtoms, segmentAtom: segmentAtom)
+		firstTracksPromise.Resolve(trackMetas)
 		
-		
-		let trackMetas = trackAtoms.map
-		{
-			track in
-			var duration = segmentAtom.segmentInfo?.segmentInfo.duration 
-			var trackStartTime = Millisecond(0)
-			let encoding = trackEncoding[track.uid]!
-			
-			
-			//return TrackMeta(id: trackUid, startTime: trackStartTime, duration: duration, encoding: encoding, samples: samples)
-			return TrackMeta(id: track.trackUid, startTime: trackStartTime, duration: duration, encoding: encoding)
-		}
 		
 		let header = MkvHeader(atoms: atoms, tracks: trackMetas)
 		
@@ -323,12 +431,6 @@ public class MkvVideoSource : VideoSource
 		
 	}
 	
-	public func GetTrackMetas() async throws -> [TrackMeta] 
-	{
-		let tracks = try await firstTracks.value
-		return tracks
-	}
-	
 	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
 	{
 		let samples = self.trackSamples[track]
@@ -339,12 +441,7 @@ public class MkvVideoSource : VideoSource
 		return samples
 	}
 
-	
-	public func GetAtoms() async throws -> [any Atom] 
-	{
-		let firstTracks = try await firstTracks.value
-		return atoms
-	}
+
 	
 	public func GetAtomData(atom: any Atom) async throws -> Data 
 	{
@@ -684,8 +781,8 @@ struct MkvTextMeta {
 // MARK: - Segment Info
 struct SegmentInfo {
 	let timestampScale: UInt64?	//	X to nano - defaults to 1_000_000
-	let durationSecs : Double?
-	var duration : Millisecond?	{	durationSecs.map{ Millisecond($0 * 1000.0) }	}
+	let durationMillisecondFloat : Double?
+	var duration : Millisecond?	{	durationMillisecondFloat.map{ Millisecond($0) }	}
 	let muxingApp: String?
 	let writingApp: String?
 	let title: String?
@@ -771,7 +868,9 @@ func ReadSegmentAtom(fileReader:inout DataReader,onAtom:(any Atom)async->Void) a
 		switch element.type
 		{
 			case .info:
-				segmentInfoAtom = try await MkvAtom_SegmentInfo.Decode(header: element, content: &elementContent)
+				let atom = try await MkvAtom_SegmentInfo.Decode(header: element, content: &elementContent)
+				segmentInfoAtom = atom
+				await onAtom(atom)
 				
 			case .tracks:
 				let trackListAtom = try await MkvAtom_TrackList.Decode(header: element, content: &elementContent)
@@ -781,7 +880,7 @@ func ReadSegmentAtom(fileReader:inout DataReader,onAtom:(any Atom)async->Void) a
 			case .cluster:
 				let clusterAtom = try await MkvAtom_Cluster.Decode(header:element, content:&elementContent)
 				clusters.append(clusterAtom)
-				await onAtom(element)
+				await onAtom(clusterAtom)
 				
 			default:
 				print("Unhandled element \(element.fourcc)")
@@ -984,7 +1083,7 @@ struct MkvAtom_SegmentInfo : Atom, SpecialisedAtom
 		
 		let segmentInfo = SegmentInfo(
 			timestampScale: timestampScale,
-			durationSecs: duration,
+			durationMillisecondFloat: duration,
 			muxingApp: muxingApp,
 			writingApp: writingApp,
 			title: title, 
@@ -1286,8 +1385,17 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 	
 	var header: any Atom
 	var childAtoms: [any Atom]?
+	{
+		[
+			InfoAtom(info: "Timestamp \(clusterTimestampString)", parent: self, uidOffset: 0)
+		]
+		+ childElements
+	}
+	
+	var childElements : [any Atom]
 	
 	var clusterTimestampUnscaled : UInt64?
+	var clusterTimestampString : String		{	clusterTimestampUnscaled.map{"\($0)"} ?? "null"	}
 	
 	//	samples are always stored in decode order
 	let samplesPerTrackNumberInDecodeOrder : [UInt64:[MkvAtom_SimpleBlock]]
@@ -1316,7 +1424,6 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 		while content.bytesRemaining > 0
 		{
 			var element = try await content.ReadEbmlElementHeader()
-			childElements.append(element)
 			
 			var childContent = try await content.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
 			
@@ -1324,11 +1431,13 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 			{
 				case .timestamp:
 					clusterTimestampUnscaled = try await childContent.readUInt(size: element.size)
-					
+					childElements.append(element)
+				
 				case .simpleBlock:
 					let sampleRaw = try await MkvAtom_SimpleBlock.Decode(header: element, content: &childContent)
 					AddSamples([sampleRaw])
-					
+					childElements.append(sampleRaw)
+				
 				case .blockGroup:
 					let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
 					for trackNumber in groupBlock.samplesPerTrackNumber.keys
@@ -1336,13 +1445,15 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 						let groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
 						AddSamples(groupSamples)
 					}
-					
+					childElements.append(groupBlock)
+			
 				default:
-					print("Unknown cluster element \(element.fourcc) x\(element.contentSize)")
+					//print("Unknown cluster element \(element.fourcc) x\(element.contentSize)")
+					childElements.append(element)
 			}
 		}
 		
-		return Self(header: header, clusterTimestampUnscaled:clusterTimestampUnscaled,  samplesPerTrackNumberInDecodeOrder: samplesPerTrackNumber)
+		return Self(header: header, childElements:childElements, clusterTimestampUnscaled:clusterTimestampUnscaled,  samplesPerTrackNumberInDecodeOrder: samplesPerTrackNumber)
 	}
 
 }
@@ -1357,6 +1468,13 @@ struct MkvAtom_SimpleBlock : Atom, SpecialisedAtom
 	static var fourcc: Fourcc	{	EBMLElementID.simpleBlock.fourcc	}
 	
 	var childAtoms: [any Atom]?
+	{[
+		InfoAtom(info: "trackNumber=\(trackNumber)", parent: self, uidOffset: 0),
+		InfoAtom(info: "flags=\(flags)", parent: self, uidOffset: 1),
+		InfoAtom(info: "keyframe=\(isKeyframe)", parent: self, uidOffset: 2),
+		InfoAtom(info: "relativeTimestampUnscaled=\(relativeTimestampUnscaled)", parent: self, uidOffset: 3),
+		InfoAtom(info: "data", filePosition:sampleDataFilePosition, totalSize: sampleDataSize)
+	]}
 	
 	var header: any Atom
 	

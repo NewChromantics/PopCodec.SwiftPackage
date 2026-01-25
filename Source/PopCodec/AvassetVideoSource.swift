@@ -42,6 +42,9 @@ class AVAssetVideoSource : VideoSource
 	
 	var url : URL
 	var asset : AVURLAsset
+	var atoms: [any Atom] = []
+	var tracks: [TrackMeta] = []
+	
 	
 	var loadAssetTask : Task<[TrackMeta],Error>!
 	
@@ -52,6 +55,15 @@ class AVAssetVideoSource : VideoSource
 		
 		loadAssetTask = Task(operation: LoadAsset)
 	}
+	
+	func WatchAtoms(onAtomsChanged: ([any Atom]) -> Void) 
+	{
+	}
+	
+	func WatchTracks(onTracksChanged: ([TrackMeta]) -> Void) 
+	{
+	}
+	
 	
 	func LoadAsset() async throws -> [TrackMeta] 
 	{

@@ -263,7 +263,20 @@ public extension TrackSampleManager
 	}
 	
 	
-	public func GetSamples(minTime:Millisecond,maxTime:Millisecond) -> ArraySlice<Mp4Sample>
+	public func GetSamples(minTime:Millisecond,maxTime:Millisecond,byPresentationTime:Bool=true) -> ArraySlice<Mp4Sample>
+	{
+		if byPresentationTime
+		{
+			return GetPresentationSamples(minTime: minTime, maxTime: maxTime)
+		}
+		else
+		{
+			return GetDecodeTimeSamples(minTime: minTime, maxTime: maxTime)
+		}
+	}
+
+	
+	private func GetPresentationSamples(minTime:Millisecond,maxTime:Millisecond) -> ArraySlice<Mp4Sample>
 	{
 		//	no samples!
 		guard let lastSample = samples.last, let firstSample = samples.first else
@@ -305,12 +318,60 @@ public extension TrackSampleManager
 		
 		return samples[minIndex...maxIndex]
 	}
+	
+	private func GetDecodeTimeSamples(minTime:Millisecond,maxTime:Millisecond) -> ArraySlice<Mp4Sample>
+	{
+		//	no samples!
+		guard let lastSample = samples.last, let firstSample = samples.first else
+		{
+			return []
+		}
+		
+		//	skip long searches if we wont hit
+		if lastSample.decodeEndTime < minTime || firstSample.decodeTime > maxTime
+		{
+			return []
+		}
+		
+		//	start in a sensible place
+		let minIndex = samples.FindNearestIndexWithBinaryChop
+		{
+			if $0.decodeTime == minTime	
+			{	
+				return .Equals	
+			}
+			if $0.decodeTime < minTime		
+			{	
+				return .LessThan
+			}
+			return .GreaterThan
+		} ?? 0
+		let maxIndex = samples.FindNearestIndexWithBinaryChop
+		{
+			if $0.decodeTime == maxTime	
+			{	
+				return .Equals
+			}
+			if $0.decodeTime < maxTime	
+			{	
+				return .LessThan
+			}
+			return .GreaterThan
+		} ?? 0
+		
+		return samples[minIndex...maxIndex]
+	}
 }
 
-public struct Mp4TrackSampleManager : TrackSampleManager
+public class Mp4TrackSampleManager : TrackSampleManager
 {
 	//	will all formats know this data ahead of time?
-	public var samples : [Mp4Sample]		//	should be in presentation order
+	public var samples : [Mp4Sample]	//	should be in presentation order
+	
+	init(samples:[Mp4Sample]=[])
+	{
+		self.samples = samples
+	}
 	
 }
 
@@ -322,35 +383,42 @@ public protocol VideoSource : ObservableObject
 	static func DetectIsFormat(headerData:Data) async -> Bool
 	
 	init(url:URL)
+
+	//	newer observable access as we assume this changes as it streams
+	var atoms : [any Atom]	{get}
+	func WatchAtoms(onAtomsChanged:@escaping([any Atom])->Void)
+
+	var tracks : [TrackMeta]	{get}
+	func WatchTracks(onTracksChanged:@escaping([TrackMeta])->Void)
+	func GetTrackMeta(trackUid:TrackUid) throws -> TrackMeta 		//	no longer async, immediate access
 	
-	//	this needs to change to "wait for first track meta to appear"
-	//	then change track meta to something observable that updates 
-	func GetTrackMetas() async throws -> [TrackMeta]
 	//	sync as we want to work on whatever data exists right now
 	func GetTrackSampleManager(track:TrackUid) throws -> TrackSampleManager
 	
-	func GetAtoms() async throws -> [any Atom]				//	meta essentially
 	func GetFrameData(frame:TrackAndTime) async throws -> Data
 	func GetAtomData(atom:any Atom) async throws -> Data
 	func AllocateTrackDecoder(track:TrackMeta) -> (any TrackDecoder)?
 }
 
-extension VideoSource
+public extension VideoSource
 {
-	//	default
-	func GetAtoms() async throws -> [any Atom] 
+	func GetRootAtom(fourcc:Fourcc) throws -> any Atom
 	{
-		return []
+		let match = self.atoms.first{ $0.fourcc == fourcc }
+		guard let match else
+		{
+			throw DataNotFound("No root atom \(fourcc)")
+		}
+		return match
 	}
-
+	
 	func GetFrameData(frame:TrackAndTime) async throws -> Data
 	{
 		throw PopCodecError("GetFrameData not implemented")
 	}
 	
-	func GetTrackMeta(trackUid:TrackUid) async throws -> TrackMeta 
+	func GetTrackMeta(trackUid:TrackUid) throws -> TrackMeta 
 	{
-		let tracks = try await GetTrackMetas()
 		let track = tracks.first{ $0.id == trackUid }
 		guard let track else
 		{
@@ -387,12 +455,24 @@ class VideoSourceFactory
 
 class TestVideoSource : VideoSource
 {
+	var atoms: [any Atom] = []
+	var tracks: [TrackMeta] = []
+	
 	required init(url: URL) 
 	{
 	}
 	
 	var defaultSelectedTrack: TrackUid?	{"Video1"}
 	var typeName: String	{"TestVideoSource"}
+	
+	func WatchAtoms(onAtomsChanged:@escaping([any Atom]) -> Void) 
+	{
+	}
+	
+	
+	func WatchTracks(onTracksChanged:@escaping([TrackMeta]) -> Void) 
+	{
+	}
 	
 	
 	func GetAtomData(atom: any Atom) async throws -> Data 

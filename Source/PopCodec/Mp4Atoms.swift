@@ -772,6 +772,7 @@ public struct Mp4Sample : Hashable
 	public var mdatOffset : UInt64	//	file position but inside it's mdat
 	public var size : UInt32
 	public var decodeTime : UInt64
+	public var decodeEndTime : UInt64		{	decodeTime + 1	}
 	public var presentationTime : UInt64
 	public var presentationEndTime : UInt64	{	presentationTime + duration }
 	public var duration : UInt64

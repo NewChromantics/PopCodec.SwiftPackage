@@ -57,6 +57,28 @@ extension Array where Element == (any Atom)
 		return true
 	}
 	
+	func EnumerateAtomsOf<AtomType:Atom>() -> [AtomType]
+	{
+		var matches : [AtomType] = []
+		
+		for element in self
+		{
+			if let matchAtom = element as? AtomType
+			{
+				matches.append(matchAtom)
+			}
+			
+			guard let children = element.childAtoms else
+			{
+				continue
+			}
+			
+			let moreMatches : [AtomType] = children.EnumerateAtomsOf()
+			matches.append(contentsOf: moreMatches)
+		}
+		return matches
+	}
+	
 	//	recursive search
 	func GetFirstChildAtom(fourcc:Fourcc) throws -> any Atom
 	{
