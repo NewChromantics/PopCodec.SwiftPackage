@@ -311,12 +311,13 @@ public struct InfoAtom : Atom
 	public var icon : String
 	
 	public var info : String
+	static let InfoFourcc = Fourcc("Info")
 	
 	init(info:String,icon:String=defaultIcon,parent:any Atom,uidOffset:Int)
 	{
 		self.info = info
 		self.icon = icon
-		self.fourcc = Fourcc("Info")
+		self.fourcc = Self.InfoFourcc
 		self.filePosition = parent.filePosition + UInt64(uidOffset+1)	//	used as uid, so uniquify it, slightly.
 		self.totalSize = 0
 	}
@@ -326,7 +327,7 @@ public struct InfoAtom : Atom
 	{
 		self.info = info
 		self.icon = icon
-		self.fourcc = Fourcc("Info")
+		self.fourcc = Self.InfoFourcc
 		self.filePosition = filePosition
 		self.totalSize = totalSize
 	}
