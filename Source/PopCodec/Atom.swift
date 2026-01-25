@@ -30,6 +30,33 @@ extension UInt8
 
 extension Array where Element == (any Atom)
 {
+	//	return false to stop
+	func EnumerateAtoms(fourcc:Fourcc,onAtom:@escaping(any Atom)->Bool) -> Bool
+	{
+		for element in self
+		{
+			if element.fourcc == fourcc
+			{
+				let continueEnum = onAtom(element)
+				if !continueEnum
+				{
+					return false
+				}
+			}
+
+			guard let children = element.childAtoms else
+			{
+				continue
+			}
+			let continueEnum = children.EnumerateAtoms(fourcc: fourcc, onAtom: onAtom)
+			if !continueEnum
+			{
+				return false
+			}
+		}
+		return true
+	}
+	
 	//	recursive search
 	func GetFirstChildAtom(fourcc:Fourcc) throws -> any Atom
 	{
