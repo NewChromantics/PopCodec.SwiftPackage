@@ -58,6 +58,8 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 	//	need to remove this, esp for chunked mp4s
 	var readHeaderTask : Task<Void,Error>!	//	promise
 	
+	@Published var trackSampleKeyframePublishTrigger : Int = 0
+
 	
 	required public init(url:URL)
 	{
@@ -83,6 +85,22 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 		}
 	}
 	
+	public func WatchTrackSampleKeyframes(onTrackSampleKeyframesChanged: @escaping (TrackUid) -> Void) 
+	{
+		//	todo: smarter version!
+		self.watch(&_trackSampleKeyframePublishTrigger)
+		{
+			for track in self.tracks
+			{
+				onTrackSampleKeyframesChanged(track.id)
+			}
+		}
+	}
+	
+	private func OnKeyframesChanged()
+	{
+		trackSampleKeyframePublishTrigger += 1
+	}
 	
 	func ReadHeader() async throws
 	{

@@ -392,6 +392,9 @@ public protocol VideoSource : ObservableObject
 	func WatchTracks(onTracksChanged:@escaping([TrackMeta])->Void)
 	func GetTrackMeta(trackUid:TrackUid) throws -> TrackMeta 		//	no longer async, immediate access
 	
+	//	callback for when known keyframes change
+	func WatchTrackSampleKeyframes(onTrackSampleKeyframesChanged:@escaping(TrackUid)->Void)
+	
 	//	sync as we want to work on whatever data exists right now
 	func GetTrackSampleManager(track:TrackUid) throws -> TrackSampleManager
 	
@@ -471,6 +474,10 @@ class TestVideoSource : VideoSource
 	
 	
 	func WatchTracks(onTracksChanged:@escaping([TrackMeta]) -> Void) 
+	{
+	}
+	
+	func WatchTrackSampleKeyframes(onTrackSampleKeyframesChanged: @escaping (TrackUid) -> Void) 
 	{
 	}
 	

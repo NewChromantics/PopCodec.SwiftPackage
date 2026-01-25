@@ -148,12 +148,13 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	var url : URL
 	@Published public var atoms: [any Atom] = []
 	@Published public var tracks: [TrackMeta] = []
+	private var trackAtomCache : [MkvAtom_TrackMeta] = []
 	private var trackNumberToTrackUid : [UInt64:TrackUid] = [:]
 	@Published var trackSamples : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	//	we parse the whole file as its a chunked format 
 	var parseFileTask : Task<Void,Error>!
-	
+	@Published var trackSampleKeyframePublishTrigger : Int = 0
 	
 	required public init(url:URL)
 	{
@@ -179,13 +180,41 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		}
 	}
 	
+	public func WatchTrackSampleKeyframes(onTrackSampleKeyframesChanged: @escaping (TrackUid) -> Void) 
+	{
+		//	todo: smarter version!
+		self.watch(&_trackSampleKeyframePublishTrigger)
+		{
+			for track in self.tracks
+			{
+				onTrackSampleKeyframesChanged(track.id)
+			}
+		}
+	}
+	
+	func OnTrackKeyframesChanged(track:TrackUid)
+	{
+		trackSampleKeyframePublishTrigger += 1
+	}
+	
 	func OnFoundSamples(track:TrackUid,samples:[Mp4Sample])
 	{
+		let anyKeyframes = samples.contains{ $0.isKeyframe }
+		
 		var sampleManager = self.trackSamples[track] ?? Mp4TrackSampleManager()
+
+		//	only sample the new ones - is this okay?
+		let samples = samples.sorted{ a,b in a.presentationTime < b.presentationTime }
 		sampleManager.samples.append(contentsOf: samples)
-		sampleManager.samples.sort{ a,b in a.presentationTime < b.presentationTime }
+		//sampleManager.samples.sort{ a,b in a.presentationTime < b.presentationTime }
+		
 		self.trackSamples[track] = sampleManager
-		print("track \(track) now has \(self.trackSamples[track]!.samples.count) samples")
+		//print("track \(track) now has \(self.trackSamples[track]!.samples.count) samples")
+		
+		if anyKeyframes
+		{
+			OnTrackKeyframesChanged(track:track)
+		}
 		
 		self.objectWillChange.send()
 	}
@@ -206,6 +235,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 			}
 			return true
 		}
+		trackAtomCache.append(contentsOf: newTrackAtoms)
 		
 		//	save new tracks
 		for trackAtom in newTrackAtoms
@@ -220,12 +250,13 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		}
 		
 		//	new atoms
-		print("new atom \(atom.fourcc)")
+		//print("new atom \(atom.fourcc)")
 		
 		//	new samples in a cluster
 		if let cluster = atom as? MkvAtom_Cluster
 		{
-			let allTrackMetaAtoms : [MkvAtom_TrackMeta] = self.atoms.EnumerateAtomsOf()
+			//let allTrackMetaAtoms : [MkvAtom_TrackMeta] = self.atoms.EnumerateAtomsOf()
+			let allTrackMetaAtoms = trackAtomCache
 			
 			for trackNumber in cluster.samplesPerTrackNumberInDecodeOrder.keys
 			{
@@ -247,7 +278,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 					
 					let sampleDuration = trackAtom.defaultDuration ?? 1
 
-					print("Cluster start \(cluster.clusterTimestampUnscaled ?? 0)")
+					//print("Cluster start \(cluster.clusterTimestampUnscaled ?? 0)")
 					
 					//	todo: store clusters into a more dynamic TrackSampleManager
 					//	convert samples

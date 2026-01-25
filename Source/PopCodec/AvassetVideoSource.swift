@@ -1,7 +1,5 @@
 import AVFoundation
 import Combine
-//import Testing
-
 
 extension AVMediaType
 {
@@ -19,7 +17,6 @@ extension AVMediaType
 	}
 }
 
-
 extension AVAssetTrack
 {
 	func GetDurationMs() async throws -> Millisecond
@@ -29,52 +26,53 @@ extension AVAssetTrack
 	}
 }
 
-
-class AVAssetVideoSource : VideoSource
+class AVAssetVideoSource : ObservableObject, VideoSource
 {
-	static func DetectIsFormat(headerData: Data) -> Bool 
+	static func DetectIsFormat(headerData: Data) async -> Bool 
 	{
 		return false
 	}
 	
-	var defaultSelectedTrack: TrackUid?{nil}
-	var typeName: String	{"AVAssetVideoSource"}
+	var defaultSelectedTrack: TrackUid? { nil }
+	var typeName: String { "AVAssetVideoSource" }
 	
 	var url : URL
 	var asset : AVURLAsset
-	var atoms: [any Atom] = []
-	var tracks: [TrackMeta] = []
-	
+	@Published var atoms: [any Atom] = []
+	@Published var tracks: [TrackMeta] = []
 	
 	var loadAssetTask : Task<[TrackMeta],Error>!
 	
-	required init(url:URL)
+	required init(url: URL)
 	{
 		self.url = url
 		self.asset = AVURLAsset(url: url)
-		
 		loadAssetTask = Task(operation: LoadAsset)
 	}
 	
-	func WatchAtoms(onAtomsChanged: ([any Atom]) -> Void) 
+	func WatchAtoms(onAtomsChanged: @escaping ([any Atom]) -> Void)
 	{
+		// Implement proper observable hook if your atoms change in the future
 	}
 	
-	func WatchTracks(onTracksChanged: ([TrackMeta]) -> Void) 
+	func WatchTracks(onTracksChanged: @escaping ([TrackMeta]) -> Void)
 	{
+		// Implement proper observable hook if your tracks change in the future
 	}
 	
-	
-	func LoadAsset() async throws -> [TrackMeta] 
+	func WatchTrackSampleKeyframes(onTrackSampleKeyframesChanged: @escaping (TrackUid) -> Void)
 	{
-		//	show a better error if the file doesnt exist
+		// Stub: implement if/when keyframes change
+	}
+	
+	func LoadAsset() async throws -> [TrackMeta]
+	{
 		let pathString  = asset.url.path(percentEncoded: false)
 		if !FileManager.default.fileExists(atPath: pathString)
 		{
 			throw PopCodecError("File doesnt exist \(pathString)")
 		}
 		
-		//let assetTracks = try await asset.loadTracks(withMediaCharacteristic: .frameBased)
 		let assetTracks = try await asset.load(.tracks)
 		var outputTracks : [TrackMeta] = []
 
@@ -83,27 +81,42 @@ class AVAssetVideoSource : VideoSource
 			let duration = try? await assetTrack.GetDurationMs()
 			let trackId = "\(assetTrack.trackID)"
 			let encoding = assetTrack.mediaType.encodingType
-			outputTracks.append( TrackMeta(id: trackId, duration: duration ?? 0, encoding: encoding) )
+			outputTracks.append(TrackMeta(id: trackId, duration: duration ?? 0, encoding: encoding))
 		}
 		return outputTracks
 	}
 
-	func GetAtomData(atom: any Atom) async throws -> Data 
+	func GetAtomData(atom: any Atom) async throws -> Data
 	{
 		throw PopCodecError("GetAtomData not implemented")
 	}
 	
-	
-	func GetTrackMetas() async throws -> [TrackMeta] 
+	func GetTrackMetas() async throws -> [TrackMeta]
 	{
 		let tracks = try await loadAssetTask.value
 		return tracks
 	}
 	
-	func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
+	func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager
 	{
 		throw PopCodecError("Todo: GetTrackSampleManager")
 	}
-	
 
+	func GetTrackMeta(trackUid: TrackUid) throws -> TrackMeta
+	{
+		guard let track = tracks.first(where: { $0.id == trackUid }) else {
+			throw DataNotFound("No such track \"\(trackUid)\"")
+		}
+		return track
+	}
+	
+	func GetFrameData(frame: TrackAndTime) async throws -> Data
+	{
+		throw PopCodecError("GetFrameData not implemented")
+	}
+	
+	func AllocateTrackDecoder(track: TrackMeta) -> (any TrackDecoder)?
+	{
+		return nil
+	}
 }
