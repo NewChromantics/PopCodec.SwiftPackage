@@ -1,7 +1,6 @@
 import Foundation
 import Combine
 import PopCommon
-import SwiftUI
 
 
 extension ByteReader
@@ -273,7 +272,9 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 					let segmentTimescale = segmentInfoAtom?.segmentInfo.timestampScale ?? 1_000_000
 					let clusterStartTimeUnscaled = (cluster.clusterTimestampUnscaled ?? 0)
 					
-					let sampleDuration = trackAtom.defaultDuration ?? 1
+					//	10 for 100fps, need to see if we can make a better default
+					//	though I wasnt reading duration properly before, so maybe its all okay now for most cases
+					let sampleDefaultDuration = trackAtom.defaultDuration ?? 1
 
 					//print("Cluster start \(cluster.clusterTimestampUnscaled ?? 0)")
 					
@@ -282,7 +283,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 					let mp4Samples = samples.enumerated().map
 					{
 						sampleIndexInTrackInCluster,mkvSample in
-						var decodeTimeUnscaled : UInt64 = UInt64(sampleIndexInTrackInCluster) * sampleDuration
+						var decodeTimeUnscaled : UInt64 = UInt64(sampleIndexInTrackInCluster) * sampleDefaultDuration
 						decodeTimeUnscaled += clusterStartTimeUnscaled
 						
 						var presentationTimeUnscaled = Int64(clusterStartTimeUnscaled) + Int64(mkvSample.relativeTimestampUnscaled)
@@ -295,7 +296,12 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 						
 						//	this cant be right
 						//let duration = segmentTimescale
-						let duration = sampleDuration
+						let sampleDurationMs = mkvSample.durationUnscaled.map{ $0 * segmentTimescale / 1_000_000 }
+						if let sampleDurationMs
+						{
+							//print("sampleDurationMs \(sampleDurationMs)")
+						}
+						let duration = sampleDurationMs ?? sampleDefaultDuration
 						
 						if presentationTime < 0
 						{
@@ -1199,8 +1205,8 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 	var codecId : String?
 	var name : String?
 	var language: String?
-	var defaultDurationNano: UInt64?
-	var defaultDuration : Millisecond?	{	defaultDurationNano.map{ $0 / 1_000_000 }	}
+	var defaultDurationUnscaled : UInt64?
+	var defaultDuration : Millisecond?	{	defaultDurationUnscaled.map{ $0 / 1_000_000 }	}
 	private var defaultDurationString : String	{	defaultDuration.map{ "\($0)ms" } ?? "null"	}
 	var codecPrivate: Data?
 	var audioMeta : MkvAtom_CodecMetaAudio?
@@ -1262,7 +1268,7 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 		var codecId : String?
 		var name: String?
 		var language: String?
-		var defaultDurationNano: UInt64?
+		var defaultDurationUnscaled: UInt64?
 		var codecPrivate: Data?
 		var audioMeta : MkvAtom_CodecMetaAudio?
 		var videoMeta : MkvAtom_CodecMetaVideo?
@@ -1291,7 +1297,7 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 				case .language:
 					language = try await content.readString(size: element.contentSize)
 				case .defaultDuration:
-					defaultDurationNano = try await content.readUInt(size: element.contentSize)
+					defaultDurationUnscaled = try await content.readUInt(size: element.contentSize)
 				case .video:
 					var videoContent = try await content.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
 					videoMeta = try await MkvAtom_CodecMetaVideo.Decode(header: element, content: &videoContent)
@@ -1318,7 +1324,20 @@ struct MkvAtom_TrackMeta : Atom, SpecialisedAtom
 			}
 		}
 		
-		return Self(header: header,children: children, number: number, uid:uid, codecId: codecId, codecPrivate: codecPrivate, audioMeta:audioMeta, videoMeta:videoMeta, trackTypeValue:trackType, codecPrivateDecodedAtom:codecAtom, codecDecodedAtomError:codecDecodedAtomError)
+		return Self(header: header,
+					children: children, 
+					number: number, 
+					uid:uid, 
+					codecId: codecId,
+					name:name,
+					language: language,
+					defaultDurationUnscaled: defaultDurationUnscaled,
+					codecPrivate: codecPrivate, 
+					audioMeta:audioMeta, 
+					videoMeta:videoMeta, 
+					trackTypeValue:trackType, 
+					codecPrivateDecodedAtom:codecAtom, 
+					codecDecodedAtomError:codecDecodedAtomError)
 	}
 }
 
@@ -1497,7 +1516,9 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 						let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
 						for trackNumber in groupBlock.samplesPerTrackNumber.keys
 						{
-							let groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
+							var groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
+							//	update their duration
+							groupSamples.mutateEach{ $0.durationUnscaled = $0.durationUnscaled ?? groupBlock.durationUnscaled }
 							AddSamples(groupSamples)
 						}
 						childElements.append(groupBlock)
@@ -1542,6 +1563,9 @@ struct MkvAtom_SimpleBlock : Atom, SpecialisedAtom
 	var flags : UInt8
 	var relativeTimestampUnscaled : Int16
 	
+	//	this isn't in the block atom, but when we unpack samples, we need to put a duration with the sample
+	//	todo: find a better place!
+	var durationUnscaled : UInt64?		 
 	
 	static func Decode(header: any Atom, content: inout DataReader) async throws -> Self 
 	{
@@ -1629,98 +1653,4 @@ struct MkvAtom_GroupBlock : Atom, SpecialisedAtom
 			
 		return Self(childAtoms: children, header: header, hasReferenceBlock: hasReferenceBlock, durationUnscaled:durationUnscaled, samplesPerTrackNumber: samplesPerTrackNumber)
 	}
-}
-
-class TextTrackDecoder : TrackDecoder
-{
-	var subscriberCancellables: [AnyCancellable] = []
-	var getFrameSample : (Millisecond)async throws->Mp4Sample
-	var getFrameData : (Mp4Sample)async throws->Data
-	
-	init(getFrameSample:@escaping(Millisecond)async throws->Mp4Sample,getFrameData:@escaping (Mp4Sample)async throws->Data)
-	{
-		self.getFrameData = getFrameData
-		self.getFrameSample = getFrameSample
-	}
-	
-	func LoadFrame(time: Millisecond, priority: DecodePriority) -> AsyncDecodedFrame 
-	{
-		var asyncFrame = TextAsyncDecodedFrame(presentationTime: time)
-		Task
-		{
-			do
-			{
-				let sample = try await getFrameSample(time)
-				let data = try await getFrameData(sample)
-				guard let dataString = String(data:data,encoding: .utf8) else
-				{
-					throw PopCodecError("Failed to turn text data into string")
-				}
-				await asyncFrame.OnFrame(dataString)
-			}
-			catch
-			{
-				await asyncFrame.OnError(error)
-			}
-		}
-		return asyncFrame
-	}
-	
-	func HasCachedFrame(time: Millisecond) -> Bool 
-	{
-		false
-	}
-	
-	public func GetDebugView() -> AnyView 
-	{
-		return AnyView(DebugView())
-	}
-	
-	@ViewBuilder func DebugView() -> some View 
-	{
-		VStack
-		{
-			Text("I am a text track decoder")
-		}
-	}
-}
-
-
-public class TextAsyncDecodedFrame : AsyncDecodedFrame
-{
-	public typealias FrameType = String
-	@Published public var frame : FrameType? = nil
-	@Published private var framePromise = SendablePromise<FrameType>()
-	
-	public init(presentationTime:Millisecond)
-	{
-		super.init(frameTime: presentationTime)
-	}
-	
-	//	init for when we already have the frame loaded
-	public init(presentationTime:Millisecond,frame:FrameType)
-	{
-		self.frame = frame
-		super.init(frameTime: presentationTime,initiallyReady: true)
-	}
-	
-	@MainActor func OnFrame(_ frame:FrameType)
-	{
-		//print("OnFrame \(frame.presentationTime)")
-		self.frame = frame
-		framePromise.Resolve(frame)
-		//print("Finished setting .frame \(frame.presentationTime)")
-	}
-	
-	@MainActor public override func OnError(_ error:Error)
-	{
-		super.OnError(error)
-		framePromise.Reject(error)
-	}
-	
-	public func WaitForFrame() async throws -> FrameType
-	{
-		return try await framePromise.value
-	}
-	
 }
