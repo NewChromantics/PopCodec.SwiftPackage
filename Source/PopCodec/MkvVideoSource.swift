@@ -1463,7 +1463,8 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 				
 				case .simpleBlock:
 					//	skip parsing samples - except first
-					if samplesPerTrackNumber.isEmpty
+					//if samplesPerTrackNumber.isEmpty
+					if true
 					{
 						let sampleRaw = try await MkvAtom_SimpleBlock.Decode(header: element, content: &childContent)
 						AddSamples([sampleRaw])
@@ -1473,7 +1474,8 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 				
 				case .blockGroup:
 					//	skip parsing samples - except first
-					if samplesPerTrackNumber.isEmpty
+					//if samplesPerTrackNumber.isEmpty
+					if true
 					{
 						let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
 						for trackNumber in groupBlock.samplesPerTrackNumber.keys
