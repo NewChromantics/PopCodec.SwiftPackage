@@ -58,10 +58,14 @@ class Mp4AtomFactory
 			return nil
 		}
 		
-		let contentBytes = try await content.ReadBytes(header.contentSize)
-		var contentReader = DataReader(data: contentBytes, globalStartPosition: header.contentFilePosition)
-		
-		let atom = try await type.Decode(header: header, content: &contentReader)
+		let atom = try await content.ReadBytes(header.contentSize)
+		{
+			contentBytes in
+			var contentReader = DataReader(data: contentBytes, globalStartPosition: header.contentFilePosition)
+			
+			let atom = try await type.Decode(header: header, content: &contentReader)
+			return atom
+		}
 		return atom
 	}
 }

@@ -207,10 +207,13 @@ public extension Atom
 			throw BadDataError("Skipping decoding contents of \(fourcc) as invalid content size")
 		}
 		
-		let contentBytes = try await content.ReadBytes(contentSize)
-		var contentReader = DataReader(data: contentBytes, globalStartPosition: contentFilePosition)
-		
-		return try await AutoDecodeChildAtoms(content: &contentReader)
+		let childAtoms = try await content.ReadBytes(contentSize)
+		{
+			contentBytes in 
+			var contentReader = DataReader(data: contentBytes, globalStartPosition: contentFilePosition)
+			return try await AutoDecodeChildAtoms(content: &contentReader)
+		}
+		return childAtoms
 	}
 	
 	func FindAtomInChildren(atomUid:AtomUid) -> (any Atom)?

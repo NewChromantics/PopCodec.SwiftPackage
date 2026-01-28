@@ -8,7 +8,13 @@ public protocol ByteReader
 	
 	mutating func SkipBytes(_ byteCount:UInt64) async throws
 	mutating func PeekBytes(filePosition:UInt64,byteCount:UInt64) async throws -> Data
+	func CheckCanRead(byteCount:UInt64) throws	//	non async, fast bounds check 
+	
+	@available(*, deprecated, message: "Use the ReadBytes() with lock callback")
 	mutating func ReadBytes(_ byteCount:UInt64) async throws -> Data
+	//	to try and help access errors, maybe this will work in the future with some explicit locks
+	mutating func ReadBytes<RETURN>(_ byteCount:UInt64,onLock:(Data)async throws->RETURN) async throws -> RETURN
+	
 	mutating func ReadBytes<TYPE>(to buffer:inout TYPE,reverse:Bool) async throws
 	mutating func ReadBytes<TYPE>(to buffer:inout Array<TYPE>) async throws
 	
@@ -18,6 +24,25 @@ public protocol ByteReader
 
 extension ByteReader
 {
+	public func CheckCanRead(byteCount:UInt64) throws
+	{
+		if byteCount == 0
+		{
+			return
+		}
+		
+		//	we're sat at the end of the file, reads will fail
+		if bytesRemaining == 0
+		{
+			throw EndOfDataError()
+		}
+		
+		if byteCount > bytesRemaining
+		{
+			throw BadDataError("Reading beyond end of data")
+		}
+	}
+	
 	//	default implementation
 	//	gr: this is only for raw types, not arrays
 	mutating public func ReadBytes<TYPE>(to buffer:inout TYPE,reverse:Bool=false) async throws
@@ -28,20 +53,24 @@ extension ByteReader
 				return $0.count
 			}
 		}()
-		let data = try await self.ReadBytes(UInt64(byteCount))
-		withUnsafeMutableBytes(of: &buffer)
+		
+		try await self.ReadBytes(UInt64(byteCount))
 		{
-			buffer in
-			if !reverse
+			data in
+			withUnsafeMutableBytes(of: &buffer)
 			{
-				data.copyBytes(to: buffer)
-			}
-			else
-			{
-				for (index,byte) in data.enumerated()
+				buffer in
+				if !reverse
 				{
-					let writeIndex = reverse ? (buffer.count-1-index) : index
-					buffer[writeIndex] = byte
+					data.copyBytes(to: buffer)
+				}
+				else
+				{
+					for (index,byte) in data.enumerated()
+					{
+						let writeIndex = reverse ? (buffer.count-1-index) : index
+						buffer[writeIndex] = byte
+					}
 				}
 			}
 		}
@@ -54,21 +83,28 @@ extension ByteReader
 			bufferBuffer in
 			bufferBuffer.count * MemoryLayout<TYPE>.size
 		}
-		let data = try await self.ReadBytes(UInt64(byteCount))
-		buffer.withUnsafeMutableBufferPointer
+		try await self.ReadBytes(UInt64(byteCount))
 		{
-			bufferBuffer in
-			data.copyBytes(to: bufferBuffer)
+			data in
+			buffer.withUnsafeMutableBufferPointer
+			{
+				bufferBuffer in
+				data.copyBytes(to: bufferBuffer)
+			}
 		}
 	}
 	
 	mutating public func ReadAs<TYPE>() async throws -> TYPE
 	{
 		let byteCount = MemoryLayout<TYPE>.stride
-		let bytes = try await ReadBytes(UInt64(byteCount))
-		let instance = bytes.withUnsafeBytes
+		let instance = try await ReadBytes(UInt64(byteCount))
 		{
-			return $0.load(as: TYPE.self)
+			data in
+			let instance = data.withUnsafeBytes
+			{
+				return $0.load(as: TYPE.self)
+			}
+			return instance
 		}
 		return instance
 	}
@@ -159,15 +195,20 @@ extension ByteReader
 	
 	mutating func Read8() async throws -> UInt8
 	{
-		let bytes = try await ReadBytes(1)
-		return bytes[0]
+		return try await ReadBytes(1)
+		{
+			return $0[0]
+		}
 	}
 	
 	mutating func Read24() async throws -> UInt32
 	{
-		let bytes = try await ReadBytes(3)
-		let u24 = UInt32(bytes[0], bytes[1], bytes[2], 0)
-		return u24
+		return try await ReadBytes(3)
+		{
+			bytes in
+			let u24 = UInt32(bytes[0], bytes[1], bytes[2], 0)
+			return u24
+		}
 	}
 	
 }
@@ -177,29 +218,43 @@ public class DataReader : ByteReader
 	var position : UInt64
 	var globalStartPosition : UInt64	//	when reading nested data, this is the external offset
 	var data : Data
+	private var overrideDataLength : UInt64? 	//	to avoid slicing, manually dictate the end  
 	public var globalPosition : UInt64	{	UInt64(position + globalStartPosition)	}
-	public var bytesRemaining: UInt64	{	UInt64(data.count) - position	}
+	var dataCount : UInt64				{	overrideDataLength ?? UInt64(data.count)	}
+	public var bytesRemaining: UInt64	{	dataCount - position	}
 	
-	public init(data: Data,position:UInt64=0,globalStartPosition:UInt64=0) 
+	public init(data: Data,position:UInt64=0,overrideDataLength:UInt64?=nil,globalStartPosition:UInt64=0) 
 	{
 		self.globalStartPosition = globalStartPosition
 		self.position = position
 		self.data = data
+		self.overrideDataLength = overrideDataLength
+		//	bad override provided! init is no throw atm though
+		if let overrideDataLength, overrideDataLength > data.count
+		{
+			self.overrideDataLength = UInt64(data.count)
+		}
 	}
 	
 	//	get a reader for the this next amount of bytes, (and skip it)
 	public func GetReaderForBytes(byteCount:UInt64) async throws -> any ByteReader
 	{
 		//	check there's enough data left
-		_ = try await self.PeekBytes(filePosition: UInt64(position), byteCount: byteCount)  
+		try CheckCanRead(byteCount:byteCount)
 		
 		//	it seems that making a data subscript/slice of another data which doesnt start at zero... crashes
 		//	starting at 0 with an offset, doesnt crash
 		//let contentData = data[offset..<offset+Int(size)]
 		//var content = DataReader(data: contentData,position: 0,globalStartPosition:0)
 		let sliceSize = UInt64(self.position) + byteCount
-		let contentData = data[0..<sliceSize]
-		var content = DataReader(data: contentData,position: position,globalStartPosition:self.globalStartPosition)
+		
+		//	avoiding slice...
+		//let contentData = data[0..<sliceSize]
+		//var content = DataReader(data: contentData,position: position,globalStartPosition:self.globalStartPosition)
+		let contentData = data
+		var content = DataReader(data: contentData,position: position, overrideDataLength:sliceSize,globalStartPosition:self.globalStartPosition)
+		
+		
 		//	now skip over it as we've "read" it into this other reader
 		try await self.SkipBytes(byteCount)
 		return content
@@ -211,6 +266,72 @@ public class DataReader : ByteReader
 		return read
 	}
 	
+	//	fast case
+	public func Read8() async throws -> UInt8
+	{
+		try CheckCanRead(byteCount: 1)
+		let byte = data[Int(position)]
+		position += 1
+		return byte
+	}
+	
+	public func ReadBytes<RETURN>(_ byteCount: UInt64, onLock: (Data) async throws -> RETURN) async throws -> RETURN
+	{
+		//	should this error?
+		if byteCount == 0
+		{
+			return try await onLock(Data())
+		}
+		
+		//	we're sat at the end of the file, reads will fail
+		if position == dataCount
+		{
+			throw EndOfDataError()
+		}
+		
+		if position + byteCount > dataCount
+		{
+			throw BadDataError("Reading beyond end of data")
+		}
+		
+		//	something about reading data[] of data[] is going wrong, so forcing an allocation...
+		//	gr: there's something bad about data[data[xxx]] when the inner data isn't starting at zero
+		//		but even doing Array(slide) on a single byte is crashing with a read error
+		//let slice = data[position..<position+byteCount]
+		//	is this more reliable???
+		//	todo: try using unsafemutable buffers which has a very explicit lock/lifetime
+		//			but dont know how to get a reliable offset
+		
+		//	gr: reading bytes directly doesnt actually seem to be that slow, would be nice to do a chunk
+		//		but this isnt crashing...
+		//		nope! still crashes!
+		var slice : [UInt8] = []
+		slice.reserveCapacity(Int(byteCount))
+		for i in position..<position+byteCount
+		{
+			slice.append(data[Data.Index(i)])
+		}
+		//let slice = data.subdata(in: Data.Index(position)..<Data.Index(position+byteCount))
+		//let slice = data[position..<position+byteCount]	//	crashing on byte1!
+		//let read = data[position..<position+byteCount]
+		//let read = Array(slice)
+		if slice.count != byteCount
+		{
+			fatalError("Got wrong number of bytes(\(slice.count)) for requested \(byteCount)")
+		}
+		//let result = try await onLock(slice)
+		let result = try await onLock( Data(slice) )
+		
+		//	move along only on success
+		//	gr: is there any code that then expects our pointer to have moved?
+		//		current setup means .position == data's start in onlock()
+		position += byteCount
+		
+		return result
+	}
+	
+	
+	//	deprecated, remove this
 	public func ReadBytes(_ byteCount: UInt64) async throws -> Data 
 	{
 		//	should this error?
@@ -219,16 +340,7 @@ public class DataReader : ByteReader
 			return Data()
 		}
 		
-		//	we're sat at the end of the file, reads will fail
-		if position == data.count
-		{
-			throw EndOfDataError()
-		}
-		
-		if position + byteCount > data.count
-		{
-			throw BadDataError("Reading beyond end of data")
-		}
+		try CheckCanRead(byteCount:byteCount)
 		
 		//	something about reading data[] of data[] is going wrong, so forcing an allocation...
 		let slice = data[position..<position+byteCount]
@@ -247,9 +359,9 @@ public class DataReader : ByteReader
 		let newPosition = position + byteCount
 		//	walking to the end is okay (hit EOF) - fail when reading AFTER the data
 		//	walking past, is bad
-		if newPosition > data.count
+		if newPosition > dataCount
 		{
-			throw BadDataError("Skipping past EOF; new position \(newPosition)/\(data.count)")
+			throw BadDataError("Skipping past EOF; new position \(newPosition)/\(dataCount)")
 		}
 		self.position = newPosition
 	}

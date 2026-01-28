@@ -1462,18 +1462,28 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 					childElements.append(element)
 				
 				case .simpleBlock:
-					let sampleRaw = try await MkvAtom_SimpleBlock.Decode(header: element, content: &childContent)
-					AddSamples([sampleRaw])
-					childElements.append(sampleRaw)
+					//	skip parsing samples - except first
+					if samplesPerTrackNumber.isEmpty
+					{
+						let sampleRaw = try await MkvAtom_SimpleBlock.Decode(header: element, content: &childContent)
+						AddSamples([sampleRaw])
+						childElements.append(sampleRaw)
+					}
+					break
 				
 				case .blockGroup:
-					let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
-					for trackNumber in groupBlock.samplesPerTrackNumber.keys
+					//	skip parsing samples - except first
+					if samplesPerTrackNumber.isEmpty
 					{
-						let groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
-						AddSamples(groupSamples)
+						let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
+						for trackNumber in groupBlock.samplesPerTrackNumber.keys
+						{
+							let groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
+							AddSamples(groupSamples)
+						}
+						childElements.append(groupBlock)
 					}
-					childElements.append(groupBlock)
+					break
 			
 				default:
 					//print("Unknown cluster element \(element.fourcc) x\(element.contentSize)")
