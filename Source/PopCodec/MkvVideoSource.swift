@@ -294,8 +294,6 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 						
 						let isKeyframe = mkvSample.isKeyframe
 						
-						//	this cant be right
-						//let duration = segmentTimescale
 						let sampleDurationMs = mkvSample.durationUnscaled.map{ $0 * segmentTimescale / 1_000_000 }
 						if let sampleDurationMs
 						{
@@ -607,15 +605,10 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		
 		if case .Text = track.encoding
 		{
-			func GetFrameSample(time:Millisecond) async throws -> Mp4Sample
+			func GetFrameSample(time:Millisecond) async throws -> Mp4Sample?
 			{
 				let sampleManager = try self.GetTrackSampleManager(track: track.id)
-				let sample = sampleManager.GetSampleLessOrEqualToTime(time, keyframe: false)
-				guard let sample else
-				{
-					throw DataNotFound("No such sample")
-				}
-				return sample
+				return sampleManager.GetSampleForTime(time)
 			}
 			let decoder = TextTrackDecoder(getFrameSample:GetFrameSample, getFrameData:self.GetFrameData)
 			return decoder

@@ -231,6 +231,23 @@ public extension TrackSampleManager
 		return Millisecond(sample.presentationTime)
 	}
 	
+	//	get the sample (assuming only one!) thats in this time
+	func GetSampleForTime(_ time:Millisecond,keyframeOnly:Bool=false) -> Mp4Sample?
+	{
+		//	find nearest sample...
+		let nearestSample = GetSampleLessOrEqualToTime(time, keyframe: keyframeOnly)
+		guard let nearestSample else
+		{
+			return nil
+		}
+		//	then check its in range
+		if !nearestSample.Overlaps(time: time)
+		{
+			return nil
+		}
+		return nearestSample
+	}
+	
 	func GetSampleLessOrEqualToTime(_ time:Millisecond,keyframe:Bool) -> Mp4Sample?
 	{
 		let searchSamples = keyframe ? keyframeSamples : samples

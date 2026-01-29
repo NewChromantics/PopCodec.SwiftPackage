@@ -781,6 +781,11 @@ public struct Mp4Sample : Hashable
 	public var presentationEndTime : UInt64	{	presentationTime + duration }
 	public var duration : UInt64
 	public var isKeyframe : Bool
+	
+	public func Overlaps(time:Millisecond) -> Bool
+	{
+		return time >= presentationTime && time <= presentationEndTime
+	}
 }
 
 public struct Mp4SampleAndDependencies

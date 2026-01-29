@@ -7,10 +7,10 @@ import SwiftUI
 class TextTrackDecoder : TrackDecoder
 {
 	var subscriberCancellables: [AnyCancellable] = []
-	var getFrameSample : (Millisecond)async throws->Mp4Sample
+	var getFrameSample : (Millisecond)async throws->Mp4Sample?
 	var getFrameData : (Mp4Sample)async throws->Data
 	
-	init(getFrameSample:@escaping(Millisecond)async throws->Mp4Sample,getFrameData:@escaping (Mp4Sample)async throws->Data)
+	init(getFrameSample:@escaping(Millisecond)async throws->Mp4Sample?,getFrameData:@escaping (Mp4Sample)async throws->Data)
 	{
 		self.getFrameData = getFrameData
 		self.getFrameSample = getFrameSample
@@ -24,6 +24,11 @@ class TextTrackDecoder : TrackDecoder
 			do
 			{
 				let sample = try await getFrameSample(time)
+				guard let sample else
+				{
+					await asyncFrame.OnError(DataNotFound("No sample at \(time)"))
+					return
+				}
 				let data = try await getFrameData(sample)
 				guard let dataString = String(data:data,encoding: .utf8) else
 				{
