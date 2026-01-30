@@ -160,7 +160,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	{
 		self.url = url
 		
-		parseFileTask = Task(operation: ParseFile)
+		parseFileTask = Task(name:"Mkv::ParseFile",priority: .high, operation: ParseFile)
 	}
 
 	
@@ -444,7 +444,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		*/
 	}
 	
-	func ParseFile() async throws
+	@concurrent func ParseFile() async throws
 	{
 		var fileData = try Data(contentsOf:url, options: .alwaysMapped)
 		var fileReader = DataReader(data: fileData)
