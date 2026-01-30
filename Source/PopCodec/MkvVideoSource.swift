@@ -27,8 +27,10 @@ extension ByteReader
 		var mask: UInt8 = 0x80
 		
 		// Determine length by finding first set bit
-		for i in 0..<8 {
-			if (firstByte & mask) != 0 {
+		for i in 0..<8 
+		{
+			if (firstByte & mask) != 0 
+			{
 				length = i + 1
 				break
 			}
@@ -41,8 +43,16 @@ extension ByteReader
 		
 		// Read all bytes including the marker bit
 		var value: UInt32 = UInt32(firstByte)
-		//offset += 1
-		
+/*
+		let valueBytes = try await ReadBytes(UInt64(length-1))
+		{
+			bytes in
+			for nextByte in bytes
+			{
+				value = (value << 8) | UInt32(nextByte)
+			}
+		}
+	*/
 		for _ in 1..<length 
 		{
 			let nextByte = try await Read8()
@@ -1483,6 +1493,15 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 			var element = try await content.ReadEbmlElementHeader()
 			
 			var childContent = try await content.GetReaderForBytes(byteCount: element.contentSize) as! DataReader
+
+			//	if we've already got A sample, and timestamp, skip the rest for speed
+			//	gr: this sorta works, but will miss off some track data
+			/*
+			if !samplesPerTrackNumber.isEmpty && clusterTimestampUnscaled != nil
+			{
+				print("Skipping cluster samples after first")
+				break
+			}*/
 			
 			switch element.type
 			{
@@ -1491,32 +1510,20 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 					childElements.append(element)
 				
 				case .simpleBlock:
-					//	skip parsing samples - except first
-					//if samplesPerTrackNumber.isEmpty
-					if true
-					{
-						let sampleRaw = try await MkvAtom_SimpleBlock.Decode(header: element, content: &childContent)
-						AddSamples([sampleRaw])
-						childElements.append(sampleRaw)
-					}
-					break
+					let sampleRaw = try await MkvAtom_SimpleBlock.Decode(header: element, content: &childContent)
+					AddSamples([sampleRaw])
+					childElements.append(sampleRaw)
 				
 				case .blockGroup:
-					//	skip parsing samples - except first
-					//if samplesPerTrackNumber.isEmpty
-					if true
+					let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
+					for trackNumber in groupBlock.samplesPerTrackNumber.keys
 					{
-						let groupBlock = try await MkvAtom_GroupBlock.Decode(header: element, content: &childContent)
-						for trackNumber in groupBlock.samplesPerTrackNumber.keys
-						{
-							var groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
-							//	update their duration
-							groupSamples.mutateEach{ $0.durationUnscaled = $0.durationUnscaled ?? groupBlock.durationUnscaled }
-							AddSamples(groupSamples)
-						}
-						childElements.append(groupBlock)
+						var groupSamples = groupBlock.samplesPerTrackNumber[trackNumber]!
+						//	update their duration
+						groupSamples.mutateEach{ $0.durationUnscaled = $0.durationUnscaled ?? groupBlock.durationUnscaled }
+						AddSamples(groupSamples)
 					}
-					break
+					childElements.append(groupBlock)
 			
 				default:
 					//print("Unknown cluster element \(element.fourcc) x\(element.contentSize)")
