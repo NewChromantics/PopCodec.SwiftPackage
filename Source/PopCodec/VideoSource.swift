@@ -194,6 +194,7 @@ public struct TrackMeta : Identifiable
 	public var icon : String		{	encoding.icon	}
 	public var label : String		{	return "\(id) \(encoding.label)"	}
 	public var colour : NSColor		{	encoding.colour	}
+	public static var defaultTrackColour : NSColor	{	TrackEncoding.Unknown.colour	}
 	
 }
 
