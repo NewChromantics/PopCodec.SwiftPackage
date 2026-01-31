@@ -230,6 +230,16 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		//	free session
 	}
 	
+	func GetPendingFrames() -> [Millisecond] 
+	{
+		decodeQueue.flatMap
+		{
+			queue in
+			return queue.frames.map{ $0.presentationTime }
+		}
+	}
+	
+	
 	//	might need this to be private as we dont want caller to decide what to filter... although we do want to reduce fetching from file...
 	private func FilterUnneccesaryDecodes(samples:[Mp4Sample]) -> ArraySlice<Mp4Sample>
 	{

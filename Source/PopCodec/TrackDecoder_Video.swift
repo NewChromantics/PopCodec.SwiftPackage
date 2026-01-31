@@ -8,9 +8,6 @@ import VideoToolbox
 //import PopCommon
 import UniformTypeIdentifiers
 
-
-
-
 //	temporarily public for some direct access
 public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, TrackDecoder, ObservableObject
 {
@@ -20,6 +17,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	public var subscriberCancellables : [AnyCancellable] = []
 	
 	var allocateDecoderTask : Task<VideoDecoder,Error>!
+	var allocatedDecoder : VideoDecoder?		//	for sync access
 	@Published var decodedFrames : [FrameOrError] = []
 	@MainActor private var decodedFrameNumbersCache = Set<Millisecond>()	//	fast access to decodedFrames data
 
@@ -77,11 +75,16 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		}
 	}
 	
+	public func GetDecodingFrames() -> [Millisecond] 
+	{
+		return allocatedDecoder?.GetPendingFrames() ?? []
+	}
 	
 	private func AllocateDecoder(codecMeta:CodecType) async throws -> VideoDecoderType
 	{
-		return try VideoDecoderType(codecMeta: codecMeta, getFrameData:getFrameData, onFrameDecoded: OnFrameDecoded, onDecodeError: OnFrameError)
-		//return try VideoToolboxH264Decoder(codecMeta:codecMeta,onFrameDecoded: OnFrameDecoded,onDecodeError: OnFrameError)
+		let decoder = try VideoDecoderType(codecMeta: codecMeta, getFrameData:getFrameData, onFrameDecoded: OnFrameDecoded, onDecodeError: OnFrameError)
+		self.allocatedDecoder = decoder
+		return decoder
 	}
 	
 	private func OnFrameError(presentationTime:Millisecond,error:Error)
@@ -294,5 +297,5 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		let frame = try await WaitForDecodedFrame(time: resolvedTime)
 		return try frame.GetFrame()
 	}
-	
+
 }

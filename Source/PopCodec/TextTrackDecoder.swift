@@ -3,9 +3,27 @@ import Combine
 import PopCommon
 import SwiftUI
 
+public extension Array
+{
+	mutating func removeFirst(where match:(Element)->Bool) throws
+	{
+		guard let index = try self.firstIndex(where: match) else
+		{
+			throw DataNotFound("No matching element")
+		}
+		self.remove(at: index)
+	}
+}
 
 class TextTrackDecoder : TrackDecoder
 {
+	func GetDecodingFrames() -> [Millisecond] 
+	{
+		pendingFrames
+	}
+	
+	@Published var pendingFrames : [Millisecond] = []
+	
 	var subscriberCancellables: [AnyCancellable] = []
 	var getFrameSample : (Millisecond)async throws->Mp4Sample?
 	var getFrameData : (Mp4Sample)async throws->Data
@@ -16,6 +34,21 @@ class TextTrackDecoder : TrackDecoder
 		self.getFrameSample = getFrameSample
 	}
 	
+	private func OnStartLoad(time:Millisecond,closure:()async throws->Void) async throws
+	{
+		pendingFrames.append(time)
+		do
+		{
+			try await closure()
+			try? pendingFrames.removeFirst{ $0 == time }
+		}
+		catch
+		{
+			try? pendingFrames.removeFirst{ $0 == time }
+			throw error
+		}
+	}
+	
 	func LoadFrame(time: Millisecond, priority: DecodePriority) -> AsyncDecodedFrame 
 	{
 		var asyncFrame = TextAsyncDecodedFrame(presentationTime: time)
@@ -23,18 +56,21 @@ class TextTrackDecoder : TrackDecoder
 		{
 			do
 			{
-				let sample = try await getFrameSample(time)
-				guard let sample else
+				try await OnStartLoad(time:time)
 				{
-					await asyncFrame.OnError(DataNotFound("No sample at \(time)"))
-					return
+					let sample = try await getFrameSample(time)
+					guard let sample else
+					{
+						await asyncFrame.OnError(DataNotFound("No sample at \(time)"))
+						return
+					}
+					let data = try await getFrameData(sample)
+					guard let dataString = String(data:data,encoding: .utf8) else
+					{
+						throw PopCodecError("Failed to turn text data into string")
+					}
+					await asyncFrame.OnFrame(dataString)
 				}
-				let data = try await getFrameData(sample)
-				guard let dataString = String(data:data,encoding: .utf8) else
-				{
-					throw PopCodecError("Failed to turn text data into string")
-				}
-				await asyncFrame.OnFrame(dataString)
 			}
 			catch
 			{

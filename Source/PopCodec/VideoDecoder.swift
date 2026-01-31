@@ -62,4 +62,5 @@ public protocol VideoDecoder
 
 	//	because this can be batched up, we may no longer need to decode this once we come to do the batch
 	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) throws
+	func GetPendingFrames() -> [Millisecond]
 }	
