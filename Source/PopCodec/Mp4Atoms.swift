@@ -769,17 +769,24 @@ struct Atom_text : Atom, SpecialisedAtom
 	}
 }
 
+//	in the real data, this can contain samples from mutliple tracks, but we dont need that information right now
+public struct Mp4ChunkMeta
+{
+	public var presentationTime : Millisecond
+	public var duration : Millisecond
+	public var presentationEndTime : Millisecond	{	presentationTime + duration }
+}
 
-
+//	todo: rename to TrackSample or just Sample 
 public struct Mp4Sample : Hashable
 {
 	public var mdatOffset : UInt64	//	file position but inside it's mdat
 	public var size : UInt32
-	public var decodeTime : UInt64
-	public var decodeEndTime : UInt64		{	decodeTime + 1	}
-	public var presentationTime : UInt64
-	public var presentationEndTime : UInt64	{	presentationTime + duration }
-	public var duration : UInt64
+	public var decodeTime : Millisecond
+	public var decodeEndTime : Millisecond			{	decodeTime + 1	}
+	public var presentationTime : Millisecond
+	public var presentationEndTime : Millisecond	{	presentationTime + duration }
+	public var duration : Millisecond
 	public var isKeyframe : Bool
 	
 	public func Overlaps(time:Millisecond) -> Bool

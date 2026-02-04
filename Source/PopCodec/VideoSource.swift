@@ -122,7 +122,18 @@ public enum TrackEncoding : CustomStringConvertible
 		switch self
 		{
 			case .Video(_):	return true
-			default:	return false
+			default:		return false
+		}
+	}
+	
+	//	todo: make this return a type we can create to get thumbnails for video, or text or waveforms
+	//		this maybe makes more sense in track meta, but for now that's all automatic with encoding
+	public var hasImageRepresentation : Bool
+	{
+		switch self
+		{
+			case .Video(_):	return true
+			default:		return false
 		}
 	}
 	
@@ -205,12 +216,17 @@ public protocol TrackSampleManager
 	//	current state
 	//	should be in presentation order
 	//	but mkv, we could pre-empt many in decode order when not knowing presentation order...
-	var samples : [Mp4Sample]	{get}		
+	var samples : [Mp4Sample]	{get}
 	
 	//	if no keyframes, should we return 0th? and if 0th is not a keyframe, does that mean there's never a keyframe?
 	//	or if there is no keyframe/sync atom, does that also mean there's no keyframe?
 	//	might be room for lots of optimisation here.
 	var keyframeSamples : [Mp4Sample]	{get}
+
+	//	are samples divided into chunks in the file. (multiple MDats or chunks/segments in mkv)
+	//	todo? if none, the whole track is one chunk? will that be simpler
+	var hasChunks : Bool			{get}
+	var chunks : [Mp4ChunkMeta]?	{get}
 }
 
 
@@ -384,6 +400,9 @@ public extension TrackSampleManager
 
 public class Mp4TrackSampleManager : TrackSampleManager
 {
+	public var hasChunks: Bool			{	false	}
+	public var chunks: [Mp4ChunkMeta]?	{	nil	}
+	
 	//	will all formats know this data ahead of time?
 	@MainActor public var samples : [Mp4Sample]	//	should be in presentation order
 	@MainActor public var keyframeSamples : [Mp4Sample] = []	//	caching for more speed

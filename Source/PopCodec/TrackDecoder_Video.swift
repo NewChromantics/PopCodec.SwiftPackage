@@ -150,6 +150,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	//	get cached frame if its there
 	private func GetDecodedFrame(time:Millisecond) -> FrameOrError?
 	{
+		//	gr: expensive func as it's called a lot, but HasCachedFrame is isolated...
 		return decodedFrames.first{ $0.presentationTime == time }
 	}
 
@@ -218,8 +219,6 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		//	use cached
 		//	crash here when reading and being set in another thread - need a safe sync read
 		return decodedFrameNumbersCache.contains(time)
-		let match = decodedFrames.first{ $0.presentationTime == time }
-		return match != nil
 	}
 	
 	
