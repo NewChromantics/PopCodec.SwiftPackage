@@ -165,15 +165,26 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	
 	//	we parse the whole file as its a chunked format 
 	var parseFileTask : Task<Void,Error>!
+	@Published public var debugParsingDuration: TimeInterval?
 	@Published var trackSampleKeyframePublishTrigger : Int = 0
 	
-	var atomIngestQueue = AsyncQueue()
+	var simpleAtomProcessQueue = AsyncQueue()
+	var sampleAtomProcessQueue = AsyncQueue()
 	
 	required public init(url:URL)
 	{
 		self.url = url
 		
-		parseFileTask = Task(name:"Mkv::ParseFile",priority: .high, operation: ParseFile)
+		parseFileTask = Task(name:"Mkv::ParseFile",priority: .high)
+		{
+			let startTime = Date()
+			defer
+			{
+				debugParsingDuration = -startTime.timeIntervalSinceNow
+				print("Parsing done in \(debugParsingDuration) secs")
+			}
+			try await ParseFile()
+		}
 	}
 
 	
@@ -228,7 +239,32 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		//self.objectWillChange.send()
 	}
 	
-	func OnFoundAtom(atom:any Atom) async
+	func OnFoundAtom(atom:any Atom)
+	{
+		//	some are fast, some are slow!
+		//	even adding this slows down parsing thread
+		//self.atoms.append(atom)
+		
+		if atom is MkvAtom_Cluster
+		{
+			//	this queuing adds 30 secs to the parsing
+			//	but I think its adding to our own actor...
+			sampleAtomProcessQueue.addOperation
+			{
+				await self.ProcessAtom(atom: atom)
+			}
+		}
+		else
+		{
+			simpleAtomProcessQueue.addOperation
+			{
+				await self.ProcessAtom(atom: atom)
+			}
+		}
+
+	}
+	
+	@concurrent func ProcessAtom(atom:any Atom) async
 	{
 		self.atoms.append(atom)
 		
@@ -339,7 +375,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 
 		//	read first root element
 		let documentMeta = try await fileReader.ReadEbmlDocumentMetaElement()
-		await OnFoundAtom(atom: documentMeta)
+		OnFoundAtom(atom: documentMeta)
 		
 		//	read segments (need example file with more than one!)
 		while fileReader.bytesRemaining > 0
@@ -347,13 +383,9 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 			let segmentAtom = try await ReadSegmentAtom(fileReader: &fileReader)
 			{
 				atom in
-				atomIngestQueue.addOperation
-				{
-					await self.OnFoundAtom(atom:atom)
-				}
+				self.OnFoundAtom(atom:atom)
 			}
 		}
-		print("All Atoms done!")
 	}
 	
 	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
@@ -777,7 +809,7 @@ struct MkvSample
 }
 
 
-func ReadSegmentAtom(fileReader:inout DataReader,onAtom:(any Atom)async->Void) async throws -> MkvAtom_Segment
+func ReadSegmentAtom(fileReader:inout DataReader,onAtom:(any Atom)->Void) async throws -> MkvAtom_Segment
 {
 	//	annoyingly the segment is massive, so we dont want to read all the data at once
 	let segmentHeader = try await fileReader.ReadEbmlElementHeader()
