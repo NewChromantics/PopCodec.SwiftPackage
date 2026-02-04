@@ -225,7 +225,8 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	{
 		let anyKeyframes = samples.contains{ $0.isKeyframe }
 		
-		var sampleManager = self.trackSamples[track] ?? Mp4TrackSampleManager()
+		var newSampleManager = await Mp4TrackSampleManager()
+		var sampleManager = self.trackSamples[track] ?? newSampleManager
 
 		await sampleManager.AddSamples(samples: samples)
 		self.trackSamples[track] = sampleManager
@@ -383,13 +384,35 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 			let trackMeta = TrackMeta(id: trackAtom.trackUid, startTime: startTime, duration: duration, encoding: encoding)
 			//self.trackNumberToTrackUid[trackAtom.number] = trackMeta.id
 			self.tracks.append(trackMeta)
-			self.trackSamples[trackMeta.id] = Mp4TrackSampleManager()
+			self.trackSamples[trackMeta.id] = await Mp4TrackSampleManager()
 		}
 		
 		if let clusterAtom = atom as? MkvAtom_Cluster
 		{
 			//	save cluster meta like first sample time
-			
+			for (trackNumber,samples) in clusterAtom.samplesPerTrackNumberInDecodeOrder
+			{
+				let trackAtom = trackAtomCache.first{ $0.number == trackNumber }
+				guard let trackAtom else
+				{
+					print("Missing track atom when adding cluster")
+					continue
+				}
+				guard let trackSampleManager = self.trackSamples[trackAtom.trackUid] else
+				{
+					print("Missing track sample manager when adding cluster")
+					continue
+				}
+				guard let startTimeUnscaled = clusterAtom.clusterTimestampUnscaled else
+				{
+					print("cluster with no timestamp")
+					continue
+				}
+				let endTime = clusterAtom.clusterLastTimestampUnscaled
+				let duration = endTime.map{ $0 - startTimeUnscaled } ?? 1000
+				let chunk = Mp4ChunkMeta(presentationTime: startTimeUnscaled, duration: duration)
+				await trackSampleManager.AddChunk(chunk: chunk)
+			}
 		}
 	}
 	
@@ -1400,7 +1423,8 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 	var childElements : [any Atom]
 	
 	var clusterTimestampUnscaled : UInt64?
-	var clusterTimestampString : String		{	clusterTimestampUnscaled.map{"\($0)"} ?? "null"	}
+	var clusterTimestampString : String				{	clusterTimestampUnscaled.map{"\($0)"} ?? "null"	}
+	var clusterLastTimestampUnscaled : UInt64?		{	return GetLastSampleTimestamp()	}
 	
 	//	samples are always stored in decode order
 	let samplesPerTrackNumberInDecodeOrder : [UInt64:[MkvAtom_SimpleBlock]]
@@ -1471,6 +1495,26 @@ struct MkvAtom_Cluster : Atom, SpecialisedAtom
 		
 		return Self(header: header, childElements:childElements, clusterTimestampUnscaled:clusterTimestampUnscaled,  samplesPerTrackNumberInDecodeOrder: samplesPerTrackNumber)
 	}
+	
+	func GetLastSampleTimestamp() -> UInt64?
+	{
+		guard let clusterTimestampUnscaled else
+		{
+			return nil
+		}
+		
+		//	todo: need track for samples with no duration
+		let lastRelativeTimestamps = samplesPerTrackNumberInDecodeOrder.map
+		{
+			trackNumber,samples in
+			//	if sample has no duration we need track's default duration
+			//	otherwise we need to add all the durations
+			//let sampleCount = samples.c
+			return UInt64(0)
+		}
+		let lastRelativeTimestamp = lastRelativeTimestamps.max() ?? 0
+		return clusterTimestampUnscaled + lastRelativeTimestamp
+	}
 
 }
 
@@ -1501,7 +1545,9 @@ struct MkvAtom_SimpleBlock : Atom, SpecialisedAtom
 	var flags : UInt8
 	var relativeTimestampUnscaled : Int16
 	
-	//	this isn't in the block atom, but when we unpack samples, we need to put a duration with the sample
+	//	this isn't in the simpleblock atom, but when we unpack samples from a group, 
+	//	we need to put a duration with the sample as we're not doing them in groups
+	//	maybe we should put basic samples into a group and keep this there?
 	//	todo: find a better place!
 	var durationUnscaled : UInt64?		 
 	

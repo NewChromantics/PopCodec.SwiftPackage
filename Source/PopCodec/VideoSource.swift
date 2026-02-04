@@ -206,6 +206,7 @@ public struct TrackMeta : Identifiable
 	public var label : String		{	return "\(id) \(encoding.label)"	}
 	public var colour : NSColor		{	encoding.colour	}
 	public static var defaultTrackColour : NSColor	{	TrackEncoding.Unknown.colour	}
+	public static var defaultChunkColour : NSColor	{	NSColor.orange	}
 	
 }
 
@@ -224,9 +225,7 @@ public protocol TrackSampleManager
 	var keyframeSamples : [Mp4Sample]	{get}
 
 	//	are samples divided into chunks in the file. (multiple MDats or chunks/segments in mkv)
-	//	todo? if none, the whole track is one chunk? will that be simpler
-	var hasChunks : Bool			{get}
-	var chunks : [Mp4ChunkMeta]?	{get}
+	var chunks : [Mp4ChunkMeta]	{get}
 }
 
 
@@ -308,7 +307,26 @@ public extension TrackSampleManager
 			return GetDecodeTimeSamples(minTime: minTime, maxTime: maxTime)
 		}
 	}
-
+	
+	public func GetChunks(minTime:Millisecond,maxTime:Millisecond) -> [Mp4ChunkMeta]
+	{
+		let chunks = self.chunks ?? []
+		let visibleChunks = chunks.filter
+		{
+			chunk in
+			if minTime > chunk.presentationEndTime
+			{
+				return false
+			}
+			if maxTime < chunk.presentationTime
+			{
+				return false
+			}
+			return true
+		}
+		return visibleChunks
+	}
+	
 	
 	private func GetPresentationSamples(minTime:Millisecond,maxTime:Millisecond) -> ArraySlice<Mp4Sample>
 	{
@@ -397,17 +415,16 @@ public extension TrackSampleManager
 	}
 }
 
-
-public class Mp4TrackSampleManager : TrackSampleManager
+@MainActor 
+public class Mp4TrackSampleManager : TrackSampleManager, ObservableObject
 {
-	public var hasChunks: Bool			{	false	}
-	public var chunks: [Mp4ChunkMeta]?	{	nil	}
+	@Published public var chunks: [Mp4ChunkMeta] = []
 	
 	//	will all formats know this data ahead of time?
-	@MainActor public var samples : [Mp4Sample]	//	should be in presentation order
-	@MainActor public var keyframeSamples : [Mp4Sample] = []	//	caching for more speed
+	@Published @MainActor public var samples : [Mp4Sample]	//	should be in presentation order
+	@Published @MainActor public var keyframeSamples : [Mp4Sample] = []	//	caching for more speed
 	
-	init(samples:[Mp4Sample]=[])
+	@MainActor init(samples:[Mp4Sample]=[])
 	{
 		self.samples = samples
 	}
@@ -422,6 +439,11 @@ public class Mp4TrackSampleManager : TrackSampleManager
 		//self.samples.sort{ a,b in a.presentationTime < b.presentationTime }
 		
 		self.keyframeSamples.append(contentsOf: newKeyframes)
+	}
+	
+	@MainActor func AddChunk(chunk:Mp4ChunkMeta)
+	{
+		self.chunks.append(chunk)
 	}
 }
 
