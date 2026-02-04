@@ -1,0 +1,23 @@
+{
+  "pins" : [
+    {
+      "identity" : "popcommon.swiftpackage",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/NewChromantics/PopCommon.SwiftPackage.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "c40db72b8ccd1a5651f17273388347cbf019f934"
+      }
+    },
+    {
+      "identity" : "queue",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mattmassicotte/Queue.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "38826d0b8838ce5edcdafa1ffb2f507693d5abcb"
+      }
+    }
+  ],
+  "version" : 2
+}

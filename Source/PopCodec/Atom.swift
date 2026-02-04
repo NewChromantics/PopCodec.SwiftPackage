@@ -153,7 +153,7 @@ public struct Fourcc : CustomStringConvertible, Equatable
 public typealias AtomUid = UInt64	//	using file position at the moment, which may be unique enough!
 
 //	structure for mp4, but currently used as data tree for any file
-public protocol Atom : Identifiable
+public protocol Atom : Identifiable, Sendable
 {
 	var id : AtomUid			{get}
 	var fourcc : Fourcc			{get}

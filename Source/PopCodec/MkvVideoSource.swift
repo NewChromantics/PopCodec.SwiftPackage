@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import PopCommon
+import Queue
 
 
 extension ByteReader
@@ -166,6 +167,8 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	var parseFileTask : Task<Void,Error>!
 	@Published var trackSampleKeyframePublishTrigger : Int = 0
 	
+	var atomIngestQueue = AsyncQueue()
+	
 	required public init(url:URL)
 	{
 		self.url = url
@@ -222,7 +225,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 			OnTrackKeyframesChanged(track:track)
 		}
 		
-		self.objectWillChange.send()
+		//self.objectWillChange.send()
 	}
 	
 	func OnFoundAtom(atom:any Atom) async
@@ -327,131 +330,6 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 				}
 			}
 		}
-		
-		/*
-		var atoms : [any Atom] = []
-		var segmentAtom : MkvAtom_Segment?
-		
-		try await parser.parse(fileReader: &fileReader)
-		{
-			atom in
-			print("Got atom \(atoms.count); \(atom.fourcc)")
-			atoms.append(atom)
-			
-			if let seg = atom as? MkvAtom_Segment
-			{
-				segmentAtom = seg
-
-				if !seg.tracks.isEmpty
-				{
-					let trackMetas = await try? Self.TrackAtomsToTrackMetas(seg.tracks, segmentAtom: seg)
-					if let trackMetas
-					{
-						firstTracksPromise.Resolve(trackMetas)
-					}
-				}
-			}
-			
-		}		
-		
-		guard let segmentAtom else
-		{
-			throw PopCodecError("No segment atom found")
-		}
-		var trackAtoms : [MkvAtom_TrackMeta] = segmentAtom.tracks
-		guard !trackAtoms.isEmpty else
-		{
-			throw PopCodecError("No track atoms")
-		}
-		
-		var clusterAtoms = segmentAtom.clusters
-		
-		let trackMetas = try await Self.TrackAtomsToTrackMetas(trackAtoms, segmentAtom: segmentAtom)
-		firstTracksPromise.Resolve(trackMetas)
-		
-		
-		let header = MkvHeader(atoms: atoms, tracks: trackMetas)
-		
-		//	read samples
-		//	todo: change this to "add cluster" to then read the samples as we go
-		if true
-		{
-			/*
-			 let allSamples = clusterAtoms.flatMap
-			 {
-			 cluster in
-			 return cluster.samplesPerTrackNumberInDecodeOrder
-			 }
-			 
-			 //	store some stuff for quick access
-			 //	[tracknumber] =
-			 struct TrackSampleStuff
-			 {
-			 var samples : [Mp4Sample]
-			 var defaultDuration : Millisecond?
-			 
-			 mutating func AddSample(_ sample:Mp4Sample)
-			 {
-			 self.samples.append(sample)
-			 //self.samples.sort{ a,b in a.presentationTime < b.presentationTime }
-			 }
-			 }
-			 var trackSamples : [UInt64:TrackSampleStuff] = [:]
-			 
-			 //	init
-			 for trackAtom in trackAtoms
-			 {
-			 trackSamples[trackAtom.number] = TrackSampleStuff(samples: [],defaultDuration: trackAtom.defaultDuration)
-			 }
-			 
-			 
-			 //let trackSamples = allSamples.filter{ $0.trackNumber == track.number }
-			 try allSamples.forEach
-			 {
-			 mkvSample in
-			 let filePosition = mkvSample.filePosition
-			 let size = UInt32(mkvSample.size)
-			 let presentationTime = Millisecond(mkvSample.presentationTime)
-			 guard var samplesForTrack = trackSamples[mkvSample.trackNumber] else
-			 {
-			 throw PopCodecError("Track missing for \(mkvSample.trackNumber)")
-			 }
-			 let sampleIndexInTrack = samplesForTrack.samples.count
-			 let calculatedDecodeTime = mkvSample.GetDecodeTimeStamp(sampleIndexInTrack: UInt64(sampleIndexInTrack))
-			 //	gr: not sure this is right? presentation time I dont think exists without decode time?
-			 //		and presentation time comes from decode time (offset in cluster * sample duration)
-			 let decodeTime = Millisecond(mkvSample.decodeTimestamp) ?? presentationTime
-			 //	todo: fix this unscaled duration
-			 let duration = mkvSample.durationUnscaled ?? samplesForTrack.defaultDuration ?? 1
-			 let mp4Sample = Mp4Sample(mdatOffset: filePosition, size: size, decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: mkvSample.isKeyframe)
-			 
-			 samplesForTrack.AddSample(mp4Sample)
-			 trackSamples[mkvSample.trackNumber] = samplesForTrack
-			 if samplesForTrack.samples.count % 1000 == 0
-			 {
-			 print("track \(mkvSample.trackNumber) got to \(samplesForTrack.samples.count) samples...")
-			 }
-			 }
-			 
-			 //	save
-			 for (trackNumber,sampleStuff) in trackSamples
-			 {
-			 let atom = trackAtoms.first{ $0.number == trackNumber }
-			 guard let atom else
-			 {
-			 throw PopCodecError("atom for track number \(trackNumber) gone missing")
-			 }
-			 if self.trackSamples.index(forKey: atom.trackUid) == nil
-			 {
-			 self.trackSamples[atom.trackUid] = Mp4TrackSampleManager(samples:[])
-			 }
-			 let samples = sampleStuff.samples.sorted{ a,b in a.presentationTime < b.presentationTime }
-			 self.trackSamples[atom.trackUid]!.samples = samples
-			 }
-			 */
-		}
-		
-		*/
 	}
 	
 	@concurrent func ParseFile() async throws
@@ -466,12 +344,16 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		//	read segments (need example file with more than one!)
 		while fileReader.bytesRemaining > 0
 		{
-			try await ReadSegmentAtom(fileReader: &fileReader)
+			let segmentAtom = try await ReadSegmentAtom(fileReader: &fileReader)
 			{
-				await OnFoundAtom(atom:$0)
+				atom in
+				atomIngestQueue.addOperation
+				{
+					await self.OnFoundAtom(atom:atom)
+				}
 			}
 		}
-		
+		print("All Atoms done!")
 	}
 	
 	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager 
