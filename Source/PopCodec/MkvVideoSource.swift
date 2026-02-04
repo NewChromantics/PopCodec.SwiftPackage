@@ -159,8 +159,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	var url : URL
 	@Published public var atoms: [any Atom] = []
 	@Published public var tracks: [TrackMeta] = []
-	private var trackAtomCache : [MkvAtom_TrackMeta] = []
-	private var trackNumberToTrackUid : [UInt64:TrackUid] = [:]
+	@Published private var trackAtomCache : [MkvAtom_TrackMeta] = []	//	published to watch for changes internally
 	@Published var trackSamples : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	//	we parse the whole file as its a chunked format 
@@ -168,8 +167,9 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 	@Published public var debugParsingDuration: TimeInterval?
 	@Published var trackSampleKeyframePublishTrigger : Int = 0
 	
-	var simpleAtomProcessQueue = AsyncQueue()
-	var sampleAtomProcessQueue = AsyncQueue()
+	//	we process atoms off the parsing task to significantly speed up parsing
+	var basicAtomProcessQueue = AsyncQueue()
+	var sampleAtomProcessQueue = AsyncQueue()	//	very heavy
 	
 	required public init(url:URL)
 	{
@@ -244,25 +244,116 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		//	some are fast, some are slow!
 		//	even adding this slows down parsing thread
 		//self.atoms.append(atom)
+
+		//	do this for clusters too, for some other fast-processing, but
+		//	not the samples
+		basicAtomProcessQueue.addOperation
+		{
+			await self.ProcessAtom(atom: atom)
+		}
 		
-		if atom is MkvAtom_Cluster
+		if let cluserAtom = atom as? MkvAtom_Cluster
 		{
 			//	this queuing adds 30 secs to the parsing
 			//	but I think its adding to our own actor...
 			sampleAtomProcessQueue.addOperation
 			{
-				await self.ProcessAtom(atom: atom)
+				await self.ReadSamplesFromAtom(cluster: cluserAtom)
 			}
 		}
-		else
-		{
-			simpleAtomProcessQueue.addOperation
-			{
-				await self.ProcessAtom(atom: atom)
-			}
-		}
-
 	}
+	
+	//	waits 
+	private func WaitForTrackAtom(withTrackNumber:UInt64) async throws -> MkvAtom_TrackMeta
+	{
+		while true//!self.parseFileTask.has errored
+		{
+			let existingTrack = self.trackAtomCache.first{ $0.number == withTrackNumber }
+			if let existingTrack
+			{
+				return existingTrack
+			}
+			
+			let changePromise = SendablePromise<Void>()
+			//	wait for cache to change
+			watch(&_trackAtomCache)
+			{
+				_ in
+				//	try again
+				changePromise.Resolve(Void())
+			}
+			try await changePromise.value
+		}
+	}
+	
+	@concurrent func ReadSamplesFromAtom(cluster:MkvAtom_Cluster) async
+	{
+		//print("Reading samples from cluster \(cluster.clusterTimestampUnscaled ?? 0)ms")
+		
+		let segmentInfoAtom : MkvAtom_SegmentInfo? = try? atoms.GetFirstChildAtomAs(fourcc: MkvAtom_SegmentInfo.fourcc)
+		
+		//	we're assuming here that the track-atom-queue is finishing before this one
+		//	we should add some safety, or some await Track(Number) just in case, but it's
+		//	rare that this would ever happen in practise
+		let allTrackMetaAtoms = trackAtomCache
+		
+		for trackNumber in cluster.samplesPerTrackNumberInDecodeOrder.keys
+		{
+			let samples = cluster.samplesPerTrackNumberInDecodeOrder[trackNumber]!
+			do
+			{
+				let trackAtom = try await WaitForTrackAtom(withTrackNumber: trackNumber)
+				
+				//	todo: we need the cluster to know which segment it came from
+				let segmentTimescale = segmentInfoAtom?.segmentInfo.timestampScale ?? 1_000_000
+				let clusterStartTimeUnscaled = (cluster.clusterTimestampUnscaled ?? 0)
+				
+				//	10 for 100fps, need to see if we can make a better default
+				//	though I wasnt reading duration properly before, so maybe its all okay now for most cases
+				let sampleDefaultDuration = trackAtom.defaultDuration ?? 1
+				
+				//print("Cluster start \(cluster.clusterTimestampUnscaled ?? 0)")
+				
+				//	todo: store clusters into a more dynamic TrackSampleManager
+				//	convert samples
+				let mp4Samples = samples.enumerated().map
+				{
+					sampleIndexInTrackInCluster,mkvSample in
+					var decodeTimeUnscaled : UInt64 = UInt64(sampleIndexInTrackInCluster) * sampleDefaultDuration
+					decodeTimeUnscaled += clusterStartTimeUnscaled
+					
+					var presentationTimeUnscaled = Int64(clusterStartTimeUnscaled) + Int64(mkvSample.relativeTimestampUnscaled)
+					
+					let decodeTime = decodeTimeUnscaled * segmentTimescale / 1_000_000
+					let presentationTime = UInt64( presentationTimeUnscaled * Int64(segmentTimescale) / 1_000_000 )
+					//print("decodeTime \(decodeTime) + presentationTime \(presentationTime) ... diff \(Int(presentationTime)-Int(decodeTime))")
+					
+					let isKeyframe = mkvSample.isKeyframe
+					
+					let sampleDurationMs = mkvSample.durationUnscaled.map{ $0 * segmentTimescale / 1_000_000 }
+					if let sampleDurationMs
+					{
+						//print("sampleDurationMs \(sampleDurationMs)")
+					}
+					let duration = sampleDurationMs ?? sampleDefaultDuration
+					
+					if presentationTime < 0
+					{
+						print("negative presentation time \(presentationTime)")
+					}
+					
+					return Mp4Sample(mdatOffset: mkvSample.sampleDataFilePosition, size: UInt32(mkvSample.sampleDataSize), decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: isKeyframe)
+				}
+				await OnFoundSamples(track: trackAtom.trackUid, samples: mp4Samples)
+			}
+			catch
+			{
+				//	nowhere to store this error!
+				print("Error adding cluster samples; \(error.localizedDescription)")
+			}
+		}
+	}
+	
 	
 	@concurrent func ProcessAtom(atom:any Atom) async
 	{
@@ -270,6 +361,7 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		
 		let segmentInfoAtom : MkvAtom_SegmentInfo? = try? atoms.GetFirstChildAtomAs(fourcc: MkvAtom_SegmentInfo.fourcc)
 		
+		//	find any track atoms in this atom's tree
 		var newTrackAtoms : [MkvAtom_TrackMeta] = []
 		[atom].EnumerateAtoms(fourcc:MkvAtom_TrackMeta.fourcc)
 		{
@@ -282,89 +374,22 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		}
 		trackAtomCache.append(contentsOf: newTrackAtoms)
 		
-		//	save new tracks
+		//	save new track meta
 		for trackAtom in newTrackAtoms
 		{
 			let encoding = await trackAtom.GetEncoding()
 			let startTime : Millisecond? = nil
 			let duration = segmentInfoAtom?.segmentInfo.duration
 			let trackMeta = TrackMeta(id: trackAtom.trackUid, startTime: startTime, duration: duration, encoding: encoding)
-			self.trackNumberToTrackUid[trackAtom.number] = trackMeta.id
+			//self.trackNumberToTrackUid[trackAtom.number] = trackMeta.id
 			self.tracks.append(trackMeta)
 			self.trackSamples[trackMeta.id] = Mp4TrackSampleManager()
 		}
 		
-		//	new atoms
-		//print("new atom \(atom.fourcc)")
-		
-		//	new samples in a cluster
-		if let cluster = atom as? MkvAtom_Cluster
+		if let clusterAtom = atom as? MkvAtom_Cluster
 		{
-			//let allTrackMetaAtoms : [MkvAtom_TrackMeta] = self.atoms.EnumerateAtomsOf()
-			let allTrackMetaAtoms = trackAtomCache
+			//	save cluster meta like first sample time
 			
-			for trackNumber in cluster.samplesPerTrackNumberInDecodeOrder.keys
-			{
-				let samples = cluster.samplesPerTrackNumberInDecodeOrder[trackNumber]!
-				do
-				{
-					guard let trackUid = self.trackNumberToTrackUid[trackNumber] else
-					{
-						throw PopCodecError("Cannot find track uid for track number \(trackNumber)")
-					}
-					guard let trackAtom = allTrackMetaAtoms.first(where: {$0.number == trackNumber} ) else
-					{
-						throw PopCodecError("Missing atom for track number \(trackNumber)")
-					}
-					
-					//	todo: we need the cluster to know which segment it came from
-					let segmentTimescale = segmentInfoAtom?.segmentInfo.timestampScale ?? 1_000_000
-					let clusterStartTimeUnscaled = (cluster.clusterTimestampUnscaled ?? 0)
-					
-					//	10 for 100fps, need to see if we can make a better default
-					//	though I wasnt reading duration properly before, so maybe its all okay now for most cases
-					let sampleDefaultDuration = trackAtom.defaultDuration ?? 1
-
-					//print("Cluster start \(cluster.clusterTimestampUnscaled ?? 0)")
-					
-					//	todo: store clusters into a more dynamic TrackSampleManager
-					//	convert samples
-					let mp4Samples = samples.enumerated().map
-					{
-						sampleIndexInTrackInCluster,mkvSample in
-						var decodeTimeUnscaled : UInt64 = UInt64(sampleIndexInTrackInCluster) * sampleDefaultDuration
-						decodeTimeUnscaled += clusterStartTimeUnscaled
-						
-						var presentationTimeUnscaled = Int64(clusterStartTimeUnscaled) + Int64(mkvSample.relativeTimestampUnscaled)
-						
-						let decodeTime = decodeTimeUnscaled * segmentTimescale / 1_000_000
-						let presentationTime = UInt64( presentationTimeUnscaled * Int64(segmentTimescale) / 1_000_000 )
-						//print("decodeTime \(decodeTime) + presentationTime \(presentationTime) ... diff \(Int(presentationTime)-Int(decodeTime))")
-						
-						let isKeyframe = mkvSample.isKeyframe
-						
-						let sampleDurationMs = mkvSample.durationUnscaled.map{ $0 * segmentTimescale / 1_000_000 }
-						if let sampleDurationMs
-						{
-							//print("sampleDurationMs \(sampleDurationMs)")
-						}
-						let duration = sampleDurationMs ?? sampleDefaultDuration
-						
-						if presentationTime < 0
-						{
-							print("negative presentation time \(presentationTime)")
-						}
-						
-						return Mp4Sample(mdatOffset: mkvSample.sampleDataFilePosition, size: UInt32(mkvSample.sampleDataSize), decodeTime: decodeTime, presentationTime: presentationTime, duration: duration, isKeyframe: isKeyframe)
-					}
-					await OnFoundSamples(track: trackUid, samples: mp4Samples)
-				}
-				catch
-				{
-					//	nowhere to store this error!
-					print("Error adding cluster samples; \(error.localizedDescription)")
-				}
-			}
 		}
 	}
 	
@@ -773,7 +798,6 @@ struct SegmentInfo {
 	}
 }
 
-// MARK: - Sample/Frame Data
 struct MkvSample 
 {
 	let trackNumber: UInt64
