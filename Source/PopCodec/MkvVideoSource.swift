@@ -246,8 +246,8 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		//	even adding this slows down parsing thread
 		//self.atoms.append(atom)
 
-		//	do this for clusters too, for some other fast-processing, but
-		//	not the samples
+		//	do this for clusters too, for some other fast-processing
+		//	but just dont process the samples
 		basicAtomProcessQueue.addOperation
 		{
 			await self.ProcessAtom(atom: atom)
@@ -255,8 +255,6 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 		
 		if let cluserAtom = atom as? MkvAtom_Cluster
 		{
-			//	this queuing adds 30 secs to the parsing
-			//	but I think its adding to our own actor...
 			sampleAtomProcessQueue.addOperation
 			{
 				await self.ReadSamplesFromAtom(cluster: cluserAtom)
