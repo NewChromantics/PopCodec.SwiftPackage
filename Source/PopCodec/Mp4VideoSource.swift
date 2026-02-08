@@ -133,6 +133,9 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 			
 			self.tracks.append(trackMeta)
 			trackSampleManagers[trackMeta.id] = trackSamples
+			
+			//	going to just assume keyframes have changed
+			OnKeyframesChanged()
 		}
 		
 	}

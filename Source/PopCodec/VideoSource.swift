@@ -415,18 +415,20 @@ public extension TrackSampleManager
 	}
 }
 
+//	gr: why did I need this to be main actor? comments!
 @MainActor 
 public class Mp4TrackSampleManager : TrackSampleManager, ObservableObject
 {
 	@Published public var chunks: [Mp4ChunkMeta] = []
 	
 	//	will all formats know this data ahead of time?
-	@Published @MainActor public var samples : [Mp4Sample]	//	should be in presentation order
+	@Published @MainActor public private(set) var samples : [Mp4Sample]	//	should be in presentation order
 	@Published @MainActor public var keyframeSamples : [Mp4Sample] = []	//	caching for more speed
 	
-	@MainActor init(samples:[Mp4Sample]=[])
+	init(samples:[Mp4Sample]=[])
 	{
-		self.samples = samples
+		self.samples = []
+		AddSamples(samples: samples)
 	}
 	
 	@MainActor func AddSamples(samples:[Mp4Sample])
