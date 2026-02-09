@@ -107,8 +107,13 @@ public extension Array
 }
 
 
-public enum TrackEncoding : CustomStringConvertible
+public enum TrackEncoding : CustomStringConvertible, Equatable
 {
+	public static func ==(lhs: Self, rhs: Self) -> Bool 
+	{
+		//	easiest!
+		return lhs.description == rhs.description
+	}
 	
 	case Video(Codec),
 		 Audio,
@@ -185,7 +190,7 @@ func clampRange(from:Int,to:Int,min:Int,max:Int) -> ClosedRange<Int>
 }
 
 
-public struct TrackMeta : Identifiable
+public struct TrackMeta : Identifiable, Equatable
 {
 	public var id : TrackUid
 	
