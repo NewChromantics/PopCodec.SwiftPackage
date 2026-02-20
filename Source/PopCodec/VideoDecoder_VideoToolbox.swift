@@ -85,6 +85,8 @@ public class VideoAsyncDecodedFrame<FrameType:VideoFrame> : AsyncDecodedFrame
 	{
 		self.frame = frame
 		super.init(frameTime: presentationTime,initiallyReady: true)
+		//	make sure WaitForFrame() will succeed
+		framePromise.Resolve(frame)
 	}
 	
 	@MainActor func OnFrame(_ frame:FrameType)
@@ -103,6 +105,10 @@ public class VideoAsyncDecodedFrame<FrameType:VideoFrame> : AsyncDecodedFrame
 
 	public func WaitForFrame() async throws -> FrameType
 	{
+		if self.isReady && !framePromise.isResolved
+		{
+			throw PopCodecError("Error in state of async frame (is ready but not resolved)")
+		}
 		return try await framePromise.value
 	}
 	
