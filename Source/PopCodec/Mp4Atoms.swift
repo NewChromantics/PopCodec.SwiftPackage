@@ -899,9 +899,13 @@ struct Atom_ctts : Atom, SpecialisedAtom
 	
 	var header : any Atom
 	var childAtoms : [any Atom]?
-	{[
+	{
+		[
 		InfoAtom(info: "\(presentationTimeOffsets.count) sample presentation offsets", parent: self, uidOffset: 0)
-	]}
+		]
+		+
+		presentationTimeOffsets.enumerated().map{ index,offset in	InfoAtom(info: "\(offset)ms", parent: self, uidOffset: 1+index)	}
+	}
 	
 	var version : UInt8
 	var flags : UInt32
@@ -1017,7 +1021,9 @@ struct Atom_stbl : Atom, SpecialisedAtom
 			{
 				let sampleIndex = samples.count
 				
+				//	this results in frames out of order
 				//let presentationTimeOffset = sampleIndex == 0 ? 0 : presentationTimeOffsets[sampleIndex-1]
+				//	this results in frames all starting at 66
 				let presentationTimeOffset = presentationTimeOffsets[sampleIndex]
 
 				let sampleDuration = sampleDurations[sampleIndex]
