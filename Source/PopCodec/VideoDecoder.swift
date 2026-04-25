@@ -50,7 +50,7 @@ enum VideoFrameOrError<VideoFrameType:VideoFrame>
 
 
 
-public protocol VideoDecoder
+public protocol VideoDecoder :  Actor, AnyObject
 {
 	associatedtype CodecType : Codec
 	associatedtype OutputFrameType : VideoFrame	//	decoded frame type
@@ -61,6 +61,6 @@ public protocol VideoDecoder
 	init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (OutputFrameType) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 
 	//	because this can be batched up, we may no longer need to decode this once we come to do the batch
-	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) throws
-	func GetPendingFrames() -> [Millisecond]
+	//	returns the last frame in frames once decoded (or pre-emptively ready)
+	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) async throws -> OutputFrameType
 }	

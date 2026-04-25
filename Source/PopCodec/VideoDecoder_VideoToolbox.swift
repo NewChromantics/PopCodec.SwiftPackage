@@ -178,9 +178,16 @@ struct DecodeBatch
 	var priority : DecodePriority
 	var frames : [Mp4Sample]
 	var frameStillRequired : ()async->Bool	//	async for isolation, but maybe there's another need
+	var promise = SendablePromise<any VideoFrame>()
+	var targetPresentationFrameNumber : Millisecond		{	frames.last!.presentationTime	}
+	
+	func OnNoLongerRequired()
+	{
+		promise.Reject( PopCodecError("Batch no longer required") )
+	}
 }
 
-class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDecoder
+actor VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDecoder
 {
 	var session : VTDecompressionSession
 	var onFrameDecoded : (OutputVideoFrame)->Void
@@ -195,7 +202,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 	var decodeThreadTask : Task<Void,Never>!
 	var getFrameData : (Mp4Sample)->Task<Data,Error>
 	
-	required init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (OutputVideoFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
+	init(codecMeta:CodecType,getFrameData:@escaping(Mp4Sample)->Task<Data,Error>,onFrameDecoded: @escaping (OutputVideoFrame) -> Void,onDecodeError:@escaping(Millisecond,Error)->Void) throws
 	{
 		self.getFrameData = getFrameData
 		self.onFrameDecoded = onFrameDecoded
@@ -235,8 +242,8 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		self.decodeThreadTask.cancel()
 		//	free session
 	}
-	
-	func GetPendingFrames() -> [Millisecond] 
+	/*
+	nonisolated func GetPendingFrames() -> [Millisecond] 
 	{
 		decodeQueue.flatMap
 		{
@@ -244,7 +251,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 			return queue.frames.map{ $0.presentationTime }
 		}
 	}
-	
+	*/
 	
 	//	might need this to be private as we dont want caller to decide what to filter... although we do want to reduce fetching from file...
 	private func FilterUnneccesaryDecodes(samples:[Mp4Sample]) -> ArraySlice<Mp4Sample>
@@ -297,6 +304,11 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 			{
 				keepQueue.append(batch)
 			}
+			else
+			{
+				//	this batch will be dropped
+				batch.OnNoLongerRequired()
+			}
 		}
 		decodeQueue = keepQueue
 		
@@ -348,23 +360,39 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 			
 			do
 			{
+				var targetDecodedFrame : OutputVideoFrame?
+				let targetPresentationTime = nextBatch.targetPresentationFrameNumber
+				var decodedFrameNumbers : [Millisecond] = []
+				
 				for frame in decodeBatch
 				{
 					//	we could pre-fetch these
 					let data = try await getFrameData(frame).value
-					try DecodeFrame(meta: frame, data: data)
+					let frame = try await DecodeFrame(meta: frame, data: data)
+					if frame.presentationTime == targetPresentationTime
+					{
+						targetDecodedFrame = frame
+					}
+					decodedFrameNumbers.append(frame.presentationTime)
 				}
+				guard let targetDecodedFrame else
+				{
+					let debugNumbers = decodedFrameNumbers.map{"\($0)"}.joined(separator: ", ")
+					throw PopCodecError("Batch failed to decode target frame \(targetPresentationTime) (decoded \(debugNumbers))")
+				}
+				nextBatch.promise.Resolve(targetDecodedFrame)
 			}
 			catch
 			{
 				print("todo: flush batch \(error.localizedDescription)")
 				//	flush out the rest of the batch?
 				//self.onDecodeError(next.0.presentationTime, error)
+				nextBatch.promise.Reject(error)
 			}
 		}
 	}
 	
-	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) throws
+	func DecodeFrames(frames:[Mp4Sample],priority:DecodePriority,frameStillRequired:@escaping()async->Bool) async throws -> OutputVideoFrame
 	{
 		let batch = DecodeBatch(priority: priority, frames: frames, frameStillRequired: frameStillRequired)
 		
@@ -384,10 +412,17 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		
 		decodeQueue.append(batch)
 		//	wake up thread
+		
+		let decodedFrame = try await batch.promise.value
+		guard let decodedTypedFrame = decodedFrame as? OutputVideoFrame else
+		{
+			throw PopCodecError("Decoded frame to wrong type")
+		}
+		return decodedTypedFrame
 	}
 	
 	
-	private func DecodeFrame(meta:Mp4Sample,data:Data) throws
+	private func DecodeFrame(meta:Mp4Sample,data:Data) async throws -> OutputVideoFrame
 	{
 		do
 		{
@@ -395,7 +430,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 			if let lastSubmitedDecodeTime, lastSubmitedDecodeTime == meta.decodeTime
 			{
 				print("Attempted double decode of \(lastSubmitedDecodeTime)")
-				return
+				throw PopCodecError("Attempted double decode of \(lastSubmitedDecodeTime) - and cannot get decoded frame")
 			}
 			
 			//	don't go backwards, unless the new one is a keyframe
@@ -463,6 +498,8 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 			
 			print("Decode frame \(meta.presentationTime) (decode=\(meta.decodeTime)) keyframe=\(meta.isKeyframe)")
 			
+			//	needs to be let to be sent to the @sendable
+			let decodePromise = SendablePromise<OutputVideoFrame>()
 			
 			let decodeFrameResult = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sampleBuffer, flags: decodeFlags, infoFlagsOut: &decodeInfoFlags)
 			{
@@ -479,7 +516,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 				guard let imageBuffer else
 				{
 					//	some errors that mean we need to restart the session
-					if self.IsRestartSessionError(status)
+					if Self.IsRestartSessionError(status)
 					{
 						print("Todo: restart decoder session")
 					}
@@ -487,20 +524,23 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 					let error : Error = VideoToolboxError(status,context:"Decode frame (decode time=\(meta.decodeTime))") ?? 
 						PopCodecError("Missing image in decode")
 					
-					print("decode error(\(status.videoToolboxError)) - invalidate lastSubmitedDecodeTime(\(self.lastSubmitedDecodeTime))")
-					self.lastSubmitedDecodeTime = nil
-					self.onDecodeError(outputPresetentationMs,error)
+					decodePromise.Reject( error )
 					return
 				}
 				let frame = OutputVideoFrame(frameBuffer: imageBuffer, decodeTime: Millisecond(meta.decodeTime), presentationTime: outputPresetentationMs, duration:meta.duration)
-				self.onFrameDecoded(frame)
+				decodePromise.Resolve(frame)
 			}
 			if let error = VideoToolboxError(decodeFrameResult,context:"Decode frame (decode time=\(meta.decodeTime))")
 			{
 				throw error
 			}
+			
+			let frame = try await decodePromise.value
+			self.onFrameDecoded(frame)
+			
 			print("Updating lastSubmitedDecodeTime to \(meta.decodeTime) - \(decodeFrameResult)")
 			lastSubmitedDecodeTime = Millisecond(meta.decodeTime)
+			return frame
 		}
 		catch
 		{
@@ -509,7 +549,7 @@ class VideoToolboxDecoder<CodecType:Codec,OutputVideoFrame:VideoFrame> : VideoDe
 		}
 	}
 	
-	func IsRestartSessionError(_ error:OSStatus) -> Bool
+	static func IsRestartSessionError(_ error:OSStatus) -> Bool
 	{
 		switch error
 		{

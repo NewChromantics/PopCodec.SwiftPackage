@@ -16,9 +16,9 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 	typealias FrameOrError = VideoFrameOrError<FrameType>
 	public var subscriberCancellables : [AnyCancellable] = []
 	
-	var allocateDecoderTask : Task<VideoDecoder,Error>!
-	var allocatedDecoder : VideoDecoder?		//	for sync access
-	@Published var decodedFrames : [FrameOrError] = []
+	var allocateDecoderTask : Task<VideoDecoderType,Error>!
+	var allocatedDecoder : VideoDecoderType?		//	for sync access
+	var decodedFrames : [FrameOrError] = []
 	@MainActor private var decodedFrameNumbersCache = Set<Millisecond>()	//	fast access to decodedFrames data
 
 	//	async closures seem to be a problem, return a promise essentally
@@ -47,19 +47,6 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			try await AllocateDecoder(codecMeta: codecMeta)
 		}
 		
-		//	auto cache the frame numbers in the decoded frames list
-		let decodedFrameNumbersCacheObserver = _decodedFrames.projectedValue.sink
-		{
-			newValue in
-			Task
-			{
-				@MainActor in
-				//	gr: decodedFrameNumbersCache needs a lock, writing and reading from different threads
-				//print("Writing new decoded frame number cache x\(newValue.count)")
-				self.decodedFrameNumbersCache = Set( newValue.map{ $0.presentationTime } )
-			}
-		}
-		subscriberCancellables.append(decodedFrameNumbersCacheObserver)
 	}
 	
 	public func GetDebugView() -> AnyView 
@@ -74,12 +61,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			Text("Decoded frame count x\(decodedFrames.count)")
 		}
 	}
-	
-	public func GetDecodingFrames() -> [Millisecond] 
-	{
-		return allocatedDecoder?.GetPendingFrames() ?? []
-	}
-	
+		
 	private func AllocateDecoder(codecMeta:CodecType) async throws -> VideoDecoderType
 	{
 		let decoder = try VideoDecoderType(codecMeta: codecMeta, getFrameData:getFrameData, onFrameDecoded: OnFrameDecoded, onDecodeError: OnFrameError)
@@ -101,10 +83,22 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		
 		//	need to resolve pending fetches
 		decodedFrames.append( .error((presentationTime,error)) )
+		let decodedFrameNumbers = Set( decodedFrames.map{ $0.presentationTime } )
+		OnDecodedFramesChanged(decodedFrameNumbers)
 		
 		//	cull 
 		CullOldDecodedFrames()
 	}
+	
+	private func OnDecodedFramesChanged(_ decodedFrameNumbers:Set<Millisecond>)
+	{
+		Task
+		{
+			@MainActor in
+			decodedFrameNumbersCache = decodedFrameNumbers
+		}
+	}
+
 	
 	private func OnFrameDecoded(frame:FrameType)
 	{
@@ -154,7 +148,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		return decodedFrames.first{ $0.presentationTime == time }
 	}
 
-	
+	/*
 	private func WaitForDecodedFrame(time:Millisecond) async throws -> FrameOrError
 	{
 		var listener : AnyCancellable?
@@ -212,7 +206,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			try await changedFuture.value
 		}
 		
-	}
+	}*/
 	
 	@MainActor public func HasCachedFrame(time: Millisecond) -> Bool 
 	{
@@ -281,7 +275,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		let decoder = try await decoderPromise.get()
 		
 		print("Submitting batch \(time) \(priority)...")
-		try decoder.DecodeFrames(frames:decodeSamples,priority: priority)
+		let outputFrame = try await decoder.DecodeFrames(frames:decodeSamples,priority: priority)
 		{
 			//	do we still need to decode this?
 			let targetFrameExists = await self.decodedFrameNumbersCache.contains(sampleAndDependencies.sample.presentationTime)
@@ -289,12 +283,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 			return !targetFrameExists
 		}		
 		
-		//	now wait for the frame to be spat out
-		let resolvedTime = sampleAndDependencies.sample.presentationTime
-		//print("Now WaitForDecodedFrame(\(time))...")
-		print("Waiting for output frame \(time)...")
-		let frame = try await WaitForDecodedFrame(time: resolvedTime)
-		return try frame.GetFrame()
+		return outputFrame
 	}
 
 }

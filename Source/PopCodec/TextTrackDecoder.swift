@@ -17,11 +17,6 @@ public extension Array
 
 class TextTrackDecoder : TrackDecoder
 {
-	func GetDecodingFrames() -> [Millisecond] 
-	{
-		pendingFrames
-	}
-	
 	@Published var pendingFrames : [Millisecond] = []
 	
 	var subscriberCancellables: [AnyCancellable] = []

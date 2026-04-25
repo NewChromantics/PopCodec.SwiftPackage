@@ -263,7 +263,7 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 		{
 			func GetFrameSampleAndDependencies(presentationTime:Millisecond) async throws -> Mp4SampleAndDependencies
 			{
-				let trackSampleManager = try await GetTrackSampleManager(track: track.id)
+				let trackSampleManager = try GetTrackSampleManager(track: track.id)
 				return try await self.GetFrameSampleAndDependencies(track: trackSampleManager, presentationTime: presentationTime,keyframe: false)
 			}
 			if let h264Codec = codec as? H264Codec
