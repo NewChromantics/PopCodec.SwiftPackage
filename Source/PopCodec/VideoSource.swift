@@ -469,7 +469,8 @@ public protocol VideoSource : ObservableObject
 
 	var tracks : [TrackMeta]	{get}
 	func WatchTracks(onTracksChanged:@escaping([TrackMeta])->Void)
-	func GetTrackMeta(trackUid:TrackUid) throws -> TrackMeta 		//	no longer async, immediate access
+	func GetTrackMeta(trackUid:TrackUid) throws -> TrackMeta 		//	no longer async, immediate access <--- gr: make this mainactor isolated?
+	func WaitForTrackMeta(trackUid:TrackUid) async throws -> TrackMeta	//	gr: async added back in so that we can throw if header has finished and track missing
 	
 	//	callback for when known keyframes change
 	func WatchTrackSampleKeyframes(onTrackSampleKeyframesChanged:@escaping(TrackUid)->Void)
@@ -564,6 +565,11 @@ class TestVideoSource : VideoSource
 	func GetAtomData(atom: any Atom) async throws -> Data 
 	{
 		throw PopCodecError("GetAtomData not implemented")
+	}
+	
+	public func WaitForTrackMeta(trackUid: TrackUid) async throws -> TrackMeta
+	{
+		return try self.GetTrackMeta(trackUid: trackUid)
 	}
 	
 

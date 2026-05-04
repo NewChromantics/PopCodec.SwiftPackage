@@ -56,6 +56,7 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 	@Published var trackSampleManagers : [TrackUid:Mp4TrackSampleManager] = [:]
 	
 	//	need to remove this, esp for chunked mp4s
+	//	but we do want something to say loading file failed
 	var readHeaderTask : Task<Void,Error>!	//	promise
 	
 	@Published var trackSampleKeyframePublishTrigger : Int = 0
@@ -139,6 +140,13 @@ public class Mp4VideoSource : VideoSource, ObservableObject, PublisherPublisher
 		}
 		
 	}
+	
+	public func WaitForTrackMeta(trackUid: TrackUid) async throws -> TrackMeta
+	{
+		try await readHeaderTask.value
+		return try self.GetTrackMeta(trackUid: trackUid)
+	}
+	
 	
 	public func GetTrackSampleManager(track: TrackUid) throws -> TrackSampleManager
 	{

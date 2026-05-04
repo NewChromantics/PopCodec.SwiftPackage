@@ -215,6 +215,13 @@ public class MkvVideoSource : VideoSource, ObservableObject, PublisherPublisher
 			}
 		}
 	}
+
+	public func WaitForTrackMeta(trackUid: TrackUid) async throws -> TrackMeta
+	{
+		//try await parseFileTask.value
+		return try self.GetTrackMeta(trackUid: trackUid)
+	}
+	
 	
 	func OnTrackKeyframesChanged(track:TrackUid)
 	{

@@ -39,7 +39,7 @@ class AVAssetVideoSource : ObservableObject, VideoSource
 	var url : URL
 	var asset : AVURLAsset
 	@Published var atoms: [any Atom] = []
-	@Published var tracks: [TrackMeta] = []
+	@Published var tracks: [TrackMeta] = []		//	explicitly a cache
 	
 	var loadAssetTask : Task<[TrackMeta],Error>!
 	
@@ -104,6 +104,15 @@ class AVAssetVideoSource : ObservableObject, VideoSource
 
 	func GetTrackMeta(trackUid: TrackUid) throws -> TrackMeta
 	{
+		guard let track = tracks.first(where: { $0.id == trackUid }) else {
+			throw DataNotFound("No such track \"\(trackUid)\"")
+		}
+		return track
+	}
+	
+	func WaitForTrackMeta(trackUid: TrackUid) async throws -> TrackMeta
+	{
+		let tracks = try await GetTrackMetas()
 		guard let track = tracks.first(where: { $0.id == trackUid }) else {
 			throw DataNotFound("No such track \"\(trackUid)\"")
 		}
