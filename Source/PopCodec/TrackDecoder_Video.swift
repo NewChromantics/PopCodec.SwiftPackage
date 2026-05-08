@@ -81,11 +81,16 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		}
 		print("Got new error frame \(presentationTime)")
 		
-		//	need to resolve pending fetches
-		decodedFrames.append( .error((presentationTime,error)) )
+		AppendDecodedFrame( .error((presentationTime,error)) )
+		
+	}
+	
+	private func AppendDecodedFrame(_ frame:FrameOrError)
+	{
+		decodedFrames.append(frame)
 		let decodedFrameNumbers = Set( decodedFrames.map{ $0.presentationTime } )
 		OnDecodedFramesChanged(decodedFrameNumbers)
-		
+
 		//	cull 
 		CullOldDecodedFrames()
 	}
@@ -123,11 +128,7 @@ public class VideoTrackDecoder<VideoDecoderType:VideoDecoder> : FrameFactory, Tr
 		//	pre-fetch cgimage
 		frameCopyForMutating.PreRenderWarmup()
 		
-		//	need to resolve pending fetches
-		decodedFrames.append( .frame(frameCopyForMutating) )
-		
-		//	cull 
-		CullOldDecodedFrames()
+		AppendDecodedFrame( .frame(frameCopyForMutating) )
 	}
 	
 	func CullOldDecodedFrames()
